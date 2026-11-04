@@ -30,7 +30,27 @@ It feels like Obsidian or Notion, but it understands Quarto.
 * **Light.** It's a Tauri 2 app that uses the system WebView, so the bundle is a few MB instead of
   Electron's 150+, and it starts instantly.
 
-## Install & run (macOS)
+## Download (no Rust needed)
+
+GitHub builds a universal macOS app (Apple Silicon + Intel) on every push:
+
+1. Go to the repo's **Actions** tab → **Build macOS app** → open the latest successful run.
+2. Download the **Folio-macOS** artifact (a zip containing `Folio_x.y.z_universal.dmg`).
+   Tagged versions (`v0.1.0`, …) also get the `.dmg` attached on the **Releases** page.
+3. Open the `.dmg` and drag Folio to Applications.
+4. The app isn't code-signed. The first time, right-click `Folio.app` and choose **Open**, or run:
+
+   ```bash
+   xattr -cr /Applications/Folio.app
+   ```
+
+Running Folio needs only what your Quarto book already needs: Quarto, plus Python with
+`jupyter_client` and `ipykernel` for running cells. You don't need Rust or Node.
+
+## Build from source (macOS)
+
+Rust is only needed to *compile* the app's native shell (Tauri). It has nothing to do with the code in
+your `.qmd` files.
 
 Prerequisites:
 - [Rust](https://rustup.rs)
