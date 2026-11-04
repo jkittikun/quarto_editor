@@ -1,7 +1,8 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { Backend, KernelMsg, RenderResult, PythonEnv, RenderOptions } from "./types";
+import type { Backend, KernelMsg, RenderResult, PythonEnv, RenderOptions, ProcResult } from "./types";
+import type { GitStatus } from "../core/git";
 
 /** Backend for the native desktop app: talks to the Rust side via Tauri commands/events. */
 export class TauriBackend implements Backend {
@@ -10,6 +11,9 @@ export class TauriBackend implements Backend {
 
   constructor() {
     listen<{ req: string; line: string }>("render-log", (e) => {
+      this.renderLogs.get(e.payload.req)?.(e.payload.line);
+    });
+    listen<{ req: string; line: string }>("proc-log", (e) => {
       this.renderLogs.get(e.payload.req)?.(e.payload.line);
     });
   }
@@ -62,6 +66,36 @@ export class TauriBackend implements Backend {
     } finally {
       this.renderLogs.delete(req);
     }
+  }
+  private async proc<T>(cmd: string, args: Record<string, unknown>, onLog: (line: string) => void): Promise<T> {
+    const req = "p" + Math.random().toString(36).slice(2);
+    this.renderLogs.set(req, onLog);
+    try {
+      return await invoke<T>(cmd, { req, ...args });
+    } finally {
+      this.renderLogs.delete(req);
+    }
+  }
+  createVenv(root: string, name: string, basePython: string, installKernel: boolean, onLog: (line: string) => void) {
+    return this.proc<ProcResult>("create_venv", { root, name, basePython, installKernel }, onLog);
+  }
+  gitStatus(root: string) {
+    return invoke<GitStatus>("git_status", { root });
+  }
+  gitInit(root: string) {
+    return invoke<ProcResult>("git_init", { root });
+  }
+  gitCommit(root: string, message: string) {
+    return invoke<ProcResult>("git_commit", { root, message });
+  }
+  gitSetIdentity(root: string, name: string, email: string) {
+    return invoke<ProcResult>("git_set_identity", { root, name, email });
+  }
+  gitShowHead(root: string, rel: string) {
+    return invoke<string | null>("git_show_head", { root, rel });
+  }
+  gitPush(root: string, remoteUrl: string | null, onLog: (line: string) => void) {
+    return this.proc<ProcResult>("git_push", { root, remoteUrl }, onLog);
   }
   openExternal(pathOrUrl: string) {
     return invoke<void>("open_external", { target: pathOrUrl });

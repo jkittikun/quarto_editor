@@ -1,5 +1,5 @@
 import { Compartment, EditorSelection, EditorState, type Extension } from "@codemirror/state";
-import { EditorView, ViewPlugin, keymap, drawSelection, dropCursor, rectangularSelection, placeholder } from "@codemirror/view";
+import { EditorView, ViewPlugin, keymap, drawSelection, dropCursor, rectangularSelection, placeholder, lineNumbers, highlightActiveLineGutter } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
@@ -121,6 +121,10 @@ export function fileKind(path: string): FileKind {
 export const previewCompartment = new Compartment();
 export const previewExtensions = (on: boolean): Extension => (on ? [livePreviewField, livePreviewHandlers, hoverPreviews] : []);
 
+/** Optional line-number gutter. */
+export const lineNumbersCompartment = new Compartment();
+export const lineNumberExtensions = (on: boolean): Extension => (on ? [lineNumbers(), highlightActiveLineGutter()] : []);
+
 /** Reader view: read-only, rendered like the book. */
 export const readerCompartment = new Compartment();
 export const readerExtensions = (on: boolean): Extension => (on ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []);
@@ -156,11 +160,13 @@ export interface SetupOptions {
   kind?: FileKind;
   preview?: boolean;
   reader?: boolean;
+  lineNumbers?: boolean;
 }
 
 export function editorExtensions(opts: SetupOptions): Extension[] {
   const kind = opts.kind ?? "markdown";
   const common: Extension[] = [
+    lineNumbersCompartment.of(lineNumberExtensions(opts.lineNumbers ?? false)),
     history(),
     drawSelection(),
     dropCursor(),

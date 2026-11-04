@@ -30,6 +30,13 @@ const book = join(work, "book");
 const empty = join(work, "empty");
 cpSync(join(ROOT, "examples/book"), book, { recursive: true, filter: (s) => !s.includes(".folio") && !s.includes("_book") && !s.includes("_freeze") });
 mkdirSync(empty);
+const single = join(work, "single");
+mkdirSync(single);
+writeFileSync(join(single, "notes.qmd"), "# Notes\n\nOnly file.\n");
+const bare = join(work, "remote.git");
+const gitConfig = join(work, "gitconfig");
+writeFileSync(gitConfig, "[user]\n  name = Folio Test\n  email = test@example.com\n[init]\n  defaultBranch = main\n");
+execSync(`git init -q --bare "${bare}"`);
 
 let failures = 0;
 const ok = (cond, msg) => {
@@ -59,7 +66,7 @@ const hasQuarto = FAKE_QUARTO || (() => {
 
 const vite = spawn("npx", ["vite", "--port", String(PORT), "--strictPort"], {
   cwd: ROOT,
-  env: { ...process.env, FOLIO_ROOT: book, ...(FAKE_QUARTO ? { QUARTO_PATH: join(ROOT, "tests/e2e/fake-quarto.sh") } : {}) },
+  env: { ...process.env, FOLIO_ROOT: book, GIT_CONFIG_GLOBAL: gitConfig, ...(FAKE_QUARTO ? { QUARTO_PATH: join(ROOT, "tests/e2e/fake-quarto.sh") } : {}) },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let viteOut = "";
@@ -212,11 +219,11 @@ try {
   ok(await waitFor(() => page.locator("#python-label").innerText().then((t) => /Python \d/.test(t)), 20000), "footer shows the detected Python version");
   await page.click("#python-env");
   await page.waitForSelector(".pick-item");
-  const nPy = await page.locator(".pick-item").count();
-  ok(nPy >= 3, `interpreter picker lists interpreters (${nPy - 2} found)`);
+  const nPy = await page.locator('.pick-item:not([data-id^="__"])').count();
+  ok(nPy >= 1, `interpreter picker lists interpreters (${nPy} found)`);
   await shot("python-picker");
-  const firstPy = await page.locator(".pick-item").first().getAttribute("data-id");
-  await page.locator(".pick-item").first().dispatchEvent("mousedown");
+  const firstPy = await page.locator('.pick-item:not([data-id^="__"])').first().getAttribute("data-id");
+  await page.locator('.pick-item:not([data-id^="__"])').first().dispatchEvent("mousedown");
   ok(await page.evaluate((root) => localStorage.getItem(`folio.python:${root}`), book) === firstPy, "chosen interpreter is remembered for the project");
 
   // ---------------------------------------------------------------- 4d. delete a chapter
@@ -291,6 +298,70 @@ try {
   ok(await page.evaluate(() => folio.viewMode === "reader"), "Ctrl/⌘3 switches to Reader");
   await page.click("#view-switch [data-mode=edit]");
   await page.setViewportSize({ width: 1300, height: 900 });
+
+  // ---------------------------------------------------------------- 4f. deleting the only file → start page
+  await page.evaluate((dir) => folio.openProject(dir), single);
+  await waitFor(() => page.evaluate(() => !!folio.current));
+  await page.locator(".cm-content").first().click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" edited");
+  await page.locator("#outline li.file-row", { hasText: "notes.qmd" }).hover();
+  await page.locator("#outline li.file-row", { hasText: "notes.qmd" }).locator(".row-delete").click();
+  await page.click(".modal-box [data-confirm]");
+  ok(await waitFor(() => page.locator("#start-panel").isVisible()), "deleting the only file returns to the start page");
+  ok(await page.locator("#editor").isHidden(), "deleted file's content is no longer shown");
+  await sleep(1200);
+  ok(!existsSync(join(single, "notes.qmd")), "autosave did not recreate the deleted file");
+
+  // ---------------------------------------------------------------- 4g. line numbers
+  await page.evaluate((dir) => folio.openProject(dir), book);
+  await waitFor(() => page.evaluate(() => !!folio.current));
+  await page.evaluate(() => folio.openFile(folio.abs("intro.qmd")));
+  await page.click("#toggle-lines");
+  ok(await waitFor(() => page.locator(".cm-lineNumbers").first().isVisible(), 2000), "line numbers can be turned on");
+  await page.click("#toggle-lines");
+  ok(await waitFor(() => page.locator(".cm-lineNumbers").count().then((n) => n === 0), 2000), "and off again");
+
+  // ---------------------------------------------------------------- 4h. create a .venv from the picker
+  await page.evaluate(() => folio.refreshPythons());
+  await page.click("#python-env");
+  await page.waitForSelector(".pick-item");
+  ok((await page.locator(".pick-item", { hasText: "Create virtual environment" }).count()) === 1, "picker offers to create a .venv");
+  await page.locator(".pick-item", { hasText: "Create virtual environment" }).dispatchEvent("mousedown");
+  await page.waitForSelector(".modal input[name=name]");
+  ok((await page.inputValue(".modal input[name=name]")) === ".venv", "venv name defaults to .venv");
+  await page.uncheck(".modal input[name=kernel]"); // skip pip install to keep the test fast
+  await page.click(".modal button[type=submit]");
+  ok(await waitFor(() => page.locator("#log-title").innerText().then((t) => /^Created \.venv$|failed/.test(t)), 90000), "venv creation finishes");
+  ok(existsSync(join(book, ".venv/bin/python")), ".venv/bin/python exists");
+  ok(await waitFor(() => page.evaluate((root) => (localStorage.getItem(`folio.python:${root}`) ?? "").endsWith(".venv/bin/python"), book)), "new .venv is selected");
+  await page.click("#log-close");
+
+  // ---------------------------------------------------------------- 4i. git: init, commit, live diff, push
+  await page.click("#toggle-scm");
+  await page.waitForSelector("#scm-panel [data-scm=init]");
+  await page.click("#scm-panel [data-scm=init]");
+  ok(await waitFor(() => existsSync(join(book, ".git")) && readFileSync(join(book, ".gitignore"), "utf8").includes(".folio/")), "Initialize repository creates .git and .gitignore");
+  await page.waitForSelector("#scm-message");
+  ok((await page.locator(".scm-file").count()) > 3, "changed files are listed");
+  ok(!(await page.locator(".scm-file", { hasText: ".venv" }).count()), ".venv is ignored");
+  await page.fill("#scm-message", "First draft");
+  await page.click("#scm-panel [data-scm=commit]");
+  ok(await waitFor(() => execSync("git log --oneline", { cwd: book, env: { ...process.env, GIT_CONFIG_GLOBAL: gitConfig } }).toString().includes("First draft")), "Commit creates a commit");
+  await page.locator(".cm-content").first().click({ position: { x: 40, y: 60 } });
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type("\nA DIFF LINE\n");
+  ok(await waitFor(() => page.locator(".scm-add .scm-text", { hasText: "A DIFF LINE" }).count().then((n) => n === 1), 4000), "live diff shows the added line in green");
+  await shot("scm");
+  await page.locator(".scm-hunk").last().click();
+  await page.click("#scm-panel [data-scm=push]");
+  await page.waitForSelector(".modal input[name=url]");
+  await page.fill(".modal input[name=url]", bare);
+  await page.click(".modal button[type=submit]");
+  ok(await waitFor(() => page.locator("#log-title").innerText().then((t) => /Push complete|Push failed/.test(t)), 20000) && (await page.locator("#log-title").innerText()) === "Push complete", "Publish pushes to the remote");
+  ok(execSync("git log --oneline main", { cwd: bare }).toString().includes("First draft"), "remote has the commit");
+  await page.click("#toggle-scm");
+  await page.click("#log-close");
 
   // ---------------------------------------------------------------- 5. quarto render
   if (hasQuarto) {

@@ -26,6 +26,7 @@
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "@viz-js/viz": "^3.31.0",
+    "diff": "^9.0.0",
     "js-yaml": "^5.5.0",
     "katex": "^0.19.1",
     "mermaid": "^12.3.0"

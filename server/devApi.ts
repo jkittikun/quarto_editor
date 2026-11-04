@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import os from "node:os";
 import { pythonCandidates, PROBE, parseProbe } from "../src/core/python";
+import { parseGitStatus, mergeGitignore, validVenvName, DEFAULT_GITIGNORE } from "../src/core/git";
 import { createInterface } from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
@@ -103,6 +104,31 @@ export function watchTree(root: string, onChange: (absPath: string) => void): { 
   };
 }
 
+const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
+
+function runGit(cwd: string, args: string[], mergeOutput = true): Promise<{ ok: boolean; code: number | null; output: string; stdout: string }> {
+  return new Promise((resolve) => {
+    execFile("git", args, { cwd, env: GIT_ENV, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const code = err ? (typeof (err as any).code === "number" ? (err as any).code : null) : 0;
+      resolve({ ok: !err, code, stdout: String(stdout), output: mergeOutput ? String(stdout) + String(stderr) : String(stderr) });
+    });
+  });
+}
+
+async function gitStatus(cwd: string) {
+  const ver = await runGit(cwd, ["--version"]);
+  if (!ver.ok) return { installed: false, isRepo: false, branch: null, upstream: null, ahead: 0, behind: 0, remote: null, hasCommits: false, files: [] };
+  const inside = await runGit(cwd, ["rev-parse", "--show-prefix"], false);
+  if (!inside.ok) return { installed: true, isRepo: false, branch: null, upstream: null, ahead: 0, behind: 0, remote: null, hasCommits: false, files: [] };
+  // the project may be a sub-folder of a larger repository: keep only its files, relative to the project
+  const prefix = inside.stdout.trim();
+  const st = await runGit(cwd, ["status", "--porcelain=v2", "--branch", "-z", "--", "."], false);
+  const remote = await runGit(cwd, ["remote", "get-url", "origin"], false);
+  const parsed = parseGitStatus(st.stdout);
+  parsed.files = parsed.files.filter((f) => f.path.startsWith(prefix)).map((f) => ({ ...f, path: f.path.slice(prefix.length) }));
+  return { installed: true, isRepo: true, remote: remote.ok ? remote.stdout.trim() : null, ...parsed };
+}
+
 /** Only allow interpreters that are `python3` on PATH or an existing file. */
 function checkPython(p: string): string {
   if (p === "python3" || p === "python") return p;
@@ -172,6 +198,38 @@ export function folioApi(opts: { defaultRoot?: string; kernelScript: string }): 
   const send = (event: string, data: unknown) => {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const c of clients) c.write(payload);
+  };
+  /** Run fixed commands one after another, streaming their output as "proc" events. */
+  const streamSteps = (id: string, cwd: string, steps: [string, string[]][], onSuccess?: () => void) => {
+    let out = "";
+    const run = (i: number) => {
+      if (i >= steps.length) {
+        try {
+          onSuccess?.();
+        } catch {}
+        return send("proc", { req: id, done: true, result: { ok: true, code: 0, output: out } });
+      }
+      const [prog, args] = steps[i];
+      send("proc", { req: id, line: `$ ${path.basename(prog)} ${args.join(" ")}` });
+      const child = spawn(prog, args, { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, stdio: ["ignore", "pipe", "pipe"] });
+      const onLine = (line: string) => {
+        out += line + "\n";
+        send("proc", { req: id, line });
+      };
+      createInterface({ input: child.stdout }).on("line", onLine);
+      createInterface({ input: child.stderr }).on("line", onLine);
+      child.on("error", (e) => {
+        onLine(`Could not run ${prog}: ${e.message}`);
+        send("proc", { req: id, done: true, result: { ok: false, code: null, output: out } });
+      });
+      child.on("exit", (code) => {
+        setTimeout(() => {
+          if (code === 0) run(i + 1);
+          else send("proc", { req: id, done: true, result: { ok: false, code, output: out } });
+        }, 100);
+      });
+    };
+    run(0);
   };
   const allowed = (p: string) => {
     const abs = path.resolve(p);
@@ -275,6 +333,66 @@ export function folioApi(opts: { defaultRoot?: string; kernelScript: string }): 
               const root = [...roots].find((r) => (cwd ?? "").startsWith(r)) ?? kernelRoot;
               if (msg.op === "execute") ensureKernel(root, msg.python ? checkPython(msg.python) : undefined);
               if (kernel && kernel.exitCode === null) kernel.stdin!.write(JSON.stringify({ ...msg, cwd }) + "\n");
+              return json(res, { ok: true });
+            }
+            case "/api/venv": {
+              const { req: id, root, name, basePython, installKernel } = await body(req);
+              const cwd = allowed(root);
+              if (!validVenvName(String(name))) throw Object.assign(new Error(`Invalid environment name: ${name}`), { status: 400 });
+              const base = checkPython(String(basePython));
+              const target = path.join(cwd, String(name));
+              const steps: [string, string[]][] = [[base, ["-m", "venv", target]]];
+              if (installKernel) steps.push([path.join(target, "bin", "python"), ["-m", "pip", "install", "jupyter_client", "ipykernel"]]);
+              streamSteps(id, cwd, steps, () => {
+                // keep the new environment out of git
+                const gi = path.join(cwd, ".gitignore");
+                const cur = fs.existsSync(gi) ? fs.readFileSync(gi, "utf8") : "";
+                if (fs.existsSync(path.join(cwd, ".git")) || cur) fs.writeFileSync(gi, mergeGitignore(cur, [`${name}/`]));
+              });
+              return json(res, { ok: true });
+            }
+            case "/api/git/status": {
+              const { root } = await body(req);
+              return json(res, await gitStatus(allowed(root)));
+            }
+            case "/api/git/init": {
+              const { root } = await body(req);
+              const cwd = allowed(root);
+              let r = await runGit(cwd, ["init", "-b", "main"]);
+              if (!r.ok) r = await runGit(cwd, ["init"]); // git < 2.28 has no -b
+              const gi = path.join(cwd, ".gitignore");
+              const cur = fs.existsSync(gi) ? fs.readFileSync(gi, "utf8") : "";
+              fs.writeFileSync(gi, mergeGitignore(cur, DEFAULT_GITIGNORE));
+              return json(res, r);
+            }
+            case "/api/git/commit": {
+              const { root, message } = await body(req);
+              const cwd = allowed(root);
+              const add = await runGit(cwd, ["add", "-A"]);
+              if (!add.ok) return json(res, add);
+              return json(res, await runGit(cwd, ["commit", "-m", String(message)]));
+            }
+            case "/api/git/identity": {
+              const { root, name, email } = await body(req);
+              const cwd = allowed(root);
+              const a = await runGit(cwd, ["config", "user.name", String(name)]);
+              const b = await runGit(cwd, ["config", "user.email", String(email)]);
+              return json(res, { ok: a.ok && b.ok, code: b.code, output: a.output + b.output });
+            }
+            case "/api/git/show": {
+              const { root, rel } = await body(req);
+              const cwd = allowed(root);
+              allowed(path.join(cwd, String(rel)));
+              const r = await runGit(cwd, ["show", `HEAD:./${String(rel).replace(/\\/g, "/")}`], false);
+              return json(res, { content: r.ok ? r.stdout : null });
+            }
+            case "/api/git/push": {
+              const { req: id, root, remoteUrl } = await body(req);
+              const cwd = allowed(root);
+              const steps: [string, string[]][] = [];
+              if (remoteUrl) steps.push(["git", ["remote", "add", "origin", String(remoteUrl)]]);
+              steps.push(["git", ["push", "-u", "origin", "HEAD"]]);
+              streamSteps(id, cwd, steps);
               return json(res, { ok: true });
             }
             case "/api/delete": {

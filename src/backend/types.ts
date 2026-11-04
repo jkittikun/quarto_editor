@@ -30,6 +30,12 @@ export interface RenderOptions {
   python?: string; // interpreter for QUARTO_PYTHON
 }
 
+export interface ProcResult {
+  ok: boolean;
+  code: number | null;
+  output: string;
+}
+
 export interface Backend {
   readonly kind: "tauri" | "http";
   /** Ask the user to choose a project folder. */
@@ -55,6 +61,18 @@ export interface Backend {
   onKernelMsg(cb: (msg: KernelMsg) => void): void;
 
   render(root: string, target: string | null, onLog: (line: string) => void, opts?: RenderOptions): Promise<RenderResult>;
+
+  /** Create `<root>/<name>` with `<basePython> -m venv`, optionally installing jupyter_client + ipykernel. */
+  createVenv(root: string, name: string, basePython: string, installKernel: boolean, onLog: (line: string) => void): Promise<ProcResult>;
+
+  // ---- git (system git, fixed subcommands only) ----
+  gitStatus(root: string): Promise<import("../core/git").GitStatus>;
+  gitInit(root: string): Promise<ProcResult>;
+  gitCommit(root: string, message: string): Promise<ProcResult>;
+  gitSetIdentity(root: string, name: string, email: string): Promise<ProcResult>;
+  /** File content at HEAD, or null when untracked / no commits yet. */
+  gitShowHead(root: string, rel: string): Promise<string | null>;
+  gitPush(root: string, remoteUrl: string | null, onLog: (line: string) => void): Promise<ProcResult>;
   openExternal(pathOrUrl: string): Promise<void>;
 }
 

@@ -8,7 +8,7 @@ import { parseFreeze, freezePath, matchFrozen } from "../core/freeze";
 import { buildIndex, scanTargets, type XrefTarget, type HeadingNumber } from "../core/xref";
 import { parseBibtex } from "../core/bibtex";
 import { escapeHtml } from "../core/inline";
-import { editorExtensions, fileKind, previewCompartment, previewExtensions, readerCompartment, readerExtensions } from "../editor/setup";
+import { editorExtensions, fileKind, previewCompartment, previewExtensions, readerCompartment, readerExtensions, lineNumbersCompartment, lineNumberExtensions } from "../editor/setup";
 import { ctx, refreshEffect } from "../editor/context";
 import {
   outputsField, setCellEffect, kernelMsgEffect, loadOutputsEffect, listCells, hashCode,
@@ -16,6 +16,8 @@ import {
 } from "../editor/cells";
 import { md } from "../editor/widgets";
 import { QuickOpen } from "./quickOpen";
+import { ScmPanel } from "./scm";
+import { validVenvName } from "../core/git";
 import { formModal, confirmModal, pickModal, type PickItem } from "./modal";
 import { $, h, debounce } from "./dom";
 
@@ -28,6 +30,7 @@ interface OpenDoc {
   savedText: string;
   saving: Promise<void> | null;
   dirty: boolean;
+  deleted?: boolean; // never write a deleted file back to disk
 }
 
 export type ViewMode = "edit" | "source" | "reader";
@@ -46,12 +49,14 @@ export class App {
   private auxLoading = new Set<string>();
   kernelState = "idle";
   private quickOpen: QuickOpen;
+  scm!: ScmPanel;
 
   constructor(readonly backend: Backend) {
     this.view = new EditorView({ parent: $("#editor") });
     this.quickOpen = new QuickOpen((rel) => this.openFile(this.abs(rel)));
     this.wireContext();
     this.wireUi();
+    this.scm = new ScmPanel(this);
     backend.onFsChange((paths) => this.onFsChange(paths));
     backend.onKernelMsg((m) => this.onKernelMsg(m));
   }
@@ -88,9 +93,9 @@ export class App {
     this.pythons = null;
     this.updatePythonLabel();
     this.refreshPythons(); // background detection of interpreters
-    if (!this.files.some((f) => /^_quarto\.ya?ml$/.test(f) || DOC_EXT.test(f))) {
-      this.renderSidebar();
-      this.showStartPanel(root);
+    this.scm?.reset();
+    if (!this.hasQuartoFiles()) {
+      this.showEmptyProject();
       return;
     }
     this.hideStartPanel();
@@ -178,6 +183,11 @@ export class App {
     localStorage.setItem(`folio.lastFile:${this.root}`, this.rel(path));
     this.view.setState(doc.state);
     this.applyViewMode();
+    this.applyLineNumbers();
+    if (this.scm?.open) {
+      this.scm.render();
+      this.scm.renderDiff();
+    }
     document.body.classList.toggle("source-file", fileKind(path) !== "markdown");
     this.reindex();
     this.view.dispatch({ effects: refreshEffect.of(null) });
@@ -193,6 +203,7 @@ export class App {
         kind: fileKind(path),
         preview: this.viewMode !== "source",
         reader: ctx.reader,
+        lineNumbers: this.lineNumbersOn(),
         onChange: () => this.onDocChange(),
         onSave: () => this.current && this.flushSave(this.current),
         extraKeys: [
@@ -200,6 +211,8 @@ export class App {
           { key: "Mod-Shift-r", run: () => (this.render(false), true) },
           { key: "Mod-Shift-e", run: () => (this.setViewMode(this.viewMode === "source" ? "edit" : "source"), true) },
           { key: "Mod-1", run: () => (this.setViewMode("edit"), true) },
+          { key: "Mod-Shift-l", run: () => (this.toggleLineNumbers(), true) },
+          { key: "Mod-Shift-g", run: () => (this.scm.toggle(), true) },
           { key: "Mod-2", run: () => (this.setViewMode("source"), true) },
           { key: "Mod-3", run: () => (this.setViewMode("reader"), true) },
         ],
@@ -295,6 +308,24 @@ export class App {
   }
 
   // ---- view options -------------------------------------------------------
+
+  lineNumbersOn() {
+    return localStorage.getItem("folio.lineNumbers") === "on";
+  }
+
+  toggleLineNumbers() {
+    localStorage.setItem("folio.lineNumbers", this.lineNumbersOn() ? "off" : "on");
+    this.applyLineNumbers();
+  }
+
+  applyLineNumbers() {
+    const on = this.lineNumbersOn();
+    $("#toggle-lines").setAttribute("aria-pressed", String(on));
+    $("#toggle-lines").classList.toggle("active", on);
+    if (lineNumbersCompartment.get(this.view.state) !== undefined) {
+      this.view.dispatch({ effects: lineNumbersCompartment.reconfigure(lineNumberExtensions(on)) });
+    }
+  }
 
   fontSize() {
     const v = Number(localStorage.getItem("folio.fontSize"));
@@ -423,10 +454,12 @@ export class App {
     );
     if (!ok) return;
     const path = this.abs(rel);
-    if (this.current?.path === path) await this.flushSave(this.current);
+    const open = this.docs.get(path);
+    if (open) open.deleted = true; // no autosave may recreate it
     try {
       await this.backend.deleteFile(path);
     } catch (e) {
+      if (open) open.deleted = false;
       this.setSaveStatus(`Could not delete ${rel}: ${e}`, true);
       return;
     }
@@ -446,17 +479,39 @@ export class App {
     this.files = await this.backend.openProject(this.root);
     await this.loadProjectConfig();
     this.setSaveStatus(`Deleted ${rel}`);
-    if (this.current?.path === path) {
-      this.current = null;
-      ctx.file = "";
-      const order = this.info ? bookOrder(this.info).map((c) => c.file) : [];
-      const next = order.find((f) => this.files.includes(f)) ?? this.files.find((f) => DOC_EXT.test(f));
-      if (next) await this.openFile(this.abs(next));
-      else {
-        this.view.setState(EditorState.create({ doc: "" }));
-        this.renderSidebar();
-      }
+    await this.afterFileGone(path);
+  }
+
+  hasQuartoFiles() {
+    return this.files.some((f) => /^_quarto\.ya?ml$/.test(f) || DOC_EXT.test(f));
+  }
+
+  /** No document open: clear the editor; show the start page when the folder has no Quarto files. */
+  showEmptyProject() {
+    this.current = null;
+    ctx.file = "";
+    this.view.setState(EditorState.create({ doc: "" }));
+    $("#crumb").innerHTML = "";
+    $("#word-count").textContent = "";
+    this.renderSidebar();
+    if (!this.hasQuartoFiles()) this.showStartPanel(this.root);
+  }
+
+  /** A document was deleted (in Folio or on disk): forget it and move on to another file. */
+  async afterFileGone(path: string) {
+    const doc = this.docs.get(path);
+    if (doc) doc.deleted = true;
+    this.docs.delete(path);
+    this.docsText.delete(this.rel(path));
+    if (this.current?.path !== path) {
+      if (!this.hasQuartoFiles()) this.showEmptyProject();
+      return;
     }
+    this.current = null;
+    const order = this.info ? bookOrder(this.info).map((c) => c.file) : [];
+    const next = order.find((f) => this.files.includes(f)) ?? this.files.find((f) => DOC_EXT.test(f));
+    if (next) await this.openFile(this.abs(next));
+    else this.showEmptyProject();
   }
 
   showFileMenu(rel: string, x: number, y: number) {
@@ -527,6 +582,9 @@ export class App {
       badge: p.ready ? undefined : "needs ipykernel",
       selected: p.path === current,
     }));
+    if (!(this.pythons ?? []).some((p) => p.source === "project")) {
+      items.unshift({ id: "__venv", label: "＋ Create virtual environment (.venv)", detail: "python -m venv in this project", group: "This project" });
+    }
     items.push({ id: "__path", label: "Enter interpreter path…", group: "More" }, { id: "__refresh", label: "Refresh list", group: "More" });
     const choice = await pickModal("Select Python interpreter", items, "Filter interpreters…");
     if (!choice) return;
@@ -536,6 +594,7 @@ export class App {
       await this.refreshPythons();
       return this.pickPython();
     }
+    if (choice === "__venv") return this.createVenv();
     let path = choice;
     if (choice === "__path") {
       const res = await formModal("Python interpreter", [{ name: "path", label: "Path to python", placeholder: "/path/to/venv/bin/python" }], "Use");
@@ -548,6 +607,40 @@ export class App {
     if (env && !env.version) this.setSaveStatus(`Couldn't run ${path}`, true);
     else if (env && !env.ready) this.setSaveStatus(`Python selected. To run cells, install: ${path} -m pip install jupyter_client ipykernel`, true);
     else this.setSaveStatus(`Using ${env?.label} (${path})`);
+  }
+
+  /** Create a project virtual environment and select it. */
+  async createVenv() {
+    const bases = (this.pythons ?? []).filter((p) => p.source !== "project" && p.version);
+    if (!bases.length) return this.setSaveStatus("No Python interpreter found to create the environment with", true);
+    const def = defaultPython(bases, null)?.path ?? bases[0].path;
+    const res = await formModal(
+      "Create virtual environment",
+      [
+        { name: "name", label: "Folder name", value: ".venv" },
+        { name: "base", label: "Base interpreter", type: "select", value: def, options: bases.map((p) => ({ value: p.path, label: `Python ${p.version} · ${p.label}` })) },
+        { name: "kernel", label: "Install jupyter_client and ipykernel (needed to run cells)", type: "checkbox", value: true },
+      ],
+      "Create",
+    );
+    if (!res) return;
+    const name = String(res.name || ".venv");
+    if (!validVenvName(name)) return this.setSaveStatus(`“${name}” isn't a valid folder name`, true);
+    $("#log-panel").hidden = false;
+    $("#log-title").textContent = `Creating ${name}…`;
+    const log = $("#log");
+    log.textContent = "";
+    const r = await this.backend.createVenv(this.root, name, String(res.base), !!res.kernel, (line) => {
+      log.textContent += line + "\n";
+      log.scrollTop = log.scrollHeight;
+    });
+    $("#log-title").textContent = r.ok ? `Created ${name}` : `Creating ${name} failed`;
+    if (!r.ok) return;
+    const py = joinPath(this.root, name, "bin/python");
+    localStorage.setItem(`folio.python:${this.root}`, py);
+    this.pythons = null;
+    await this.refreshPythons();
+    this.setSaveStatus(`Using ${name} (${this.effectivePython()?.version ?? "?"})`);
   }
 
   // ---- sidebar resizing --------------------------------------------------------
@@ -607,11 +700,13 @@ export class App {
     this.setSaveStatus("Editing…");
     this.saveSoon();
     this.reindexSoon();
+    this.scm?.diffSoon();
     this.updateStatusSoon();
   }
 
   async flushSave(doc: OpenDoc) {
     if (doc.saving) await doc.saving;
+    if (doc.deleted) return;
     const state = doc === this.current ? this.view.state : doc.state;
     const text = state.doc.toString();
     if (text === doc.savedText) {
@@ -623,6 +718,7 @@ export class App {
       () => {
         doc.savedText = text;
         doc.dirty = doc === this.current ? this.view.state.doc.toString() !== text : false;
+        this.scm?.refreshSoon();
         if (doc === this.current) this.setSaveStatus(doc.dirty ? "Editing…" : "Saved");
       },
       (e) => this.setSaveStatus(`Save failed: ${e}`, true),
@@ -668,6 +764,14 @@ export class App {
     if (reloadList) this.files = await this.backend.openProject(this.root);
     if (reloadConfig) await this.loadProjectConfig();
     else this.reindex();
+    this.scm?.refreshSoon();
+    // documents deleted outside Folio (Finder, git checkout, …)
+    for (const p of paths) {
+      const doc = this.docs.get(p);
+      if (doc && !doc.deleted && !this.files.includes(this.rel(p)) && !(await this.backend.exists(p).catch(() => true))) {
+        await this.afterFileGone(p);
+      }
+    }
     this.view.dispatch({ effects: refreshEffect.of(null) });
   }
 
@@ -876,6 +980,7 @@ export class App {
     $("#render-book").onclick = () => this.render(true);
     $("#run-all").onclick = () => this.runAll();
     $("#export-pdf").onclick = () => this.exportPdf();
+    $("#toggle-lines").onclick = () => this.toggleLineNumbers();
     this.viewMode = this.loadViewMode();
     ctx.reader = this.viewMode === "reader";
     for (const b of document.querySelectorAll<HTMLButtonElement>("#view-switch [data-mode]")) {
@@ -924,6 +1029,12 @@ export class App {
       } else if (mod && !e.shiftKey && !e.altKey && ["1", "2", "3"].includes(e.key)) {
         e.preventDefault();
         this.setViewMode((["edit", "source", "reader"] as const)[+e.key - 1]);
+      } else if (mod && e.shiftKey && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        this.scm.toggle();
+      } else if (mod && e.shiftKey && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        this.toggleLineNumbers();
       } else if (mod && (e.key === "=" || e.key === "+")) {
         e.preventDefault();
         this.setFontSize(this.fontSize() + 1);

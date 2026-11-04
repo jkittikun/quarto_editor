@@ -1,6 +1,7 @@
 //! Folio native backend: file access scoped to opened projects, a file watcher,
 //! the Python kernel bridge and `quarto render`.
 
+mod git;
 mod kernel;
 mod project;
 mod render;
@@ -162,6 +163,97 @@ async fn render(
     Ok(res)
 }
 
+// ---- git -------------------------------------------------------------------
+
+#[tauri::command]
+async fn git_status(app: AppHandle, root: String) -> CmdResult<git::GitStatus> {
+    let root = checked(&app.state::<AppState>(), &root)?;
+    tauri::async_runtime::spawn_blocking(move || git::status(&root)).await.map_err(|e| CmdError(e.to_string()))
+}
+
+#[tauri::command]
+async fn git_init(app: AppHandle, root: String) -> CmdResult<git::ProcResult> {
+    let root = checked(&app.state::<AppState>(), &root)?;
+    tauri::async_runtime::spawn_blocking(move || git::init(&root)).await.map_err(|e| CmdError(e.to_string()))
+}
+
+#[tauri::command]
+async fn git_commit(app: AppHandle, root: String, message: String) -> CmdResult<git::ProcResult> {
+    let root = checked(&app.state::<AppState>(), &root)?;
+    tauri::async_runtime::spawn_blocking(move || git::commit(&root, &message)).await.map_err(|e| CmdError(e.to_string()))
+}
+
+#[tauri::command]
+async fn git_set_identity(app: AppHandle, root: String, name: String, email: String) -> CmdResult<git::ProcResult> {
+    let root = checked(&app.state::<AppState>(), &root)?;
+    tauri::async_runtime::spawn_blocking(move || git::set_identity(&root, &name, &email))
+        .await
+        .map_err(|e| CmdError(e.to_string()))
+}
+
+#[tauri::command]
+async fn git_show_head(app: AppHandle, root: String, rel: String) -> CmdResult<Option<String>> {
+    let state = app.state::<AppState>();
+    let root = checked(&state, &root)?;
+    checked(&state, &root.join(&rel).to_string_lossy())?;
+    tauri::async_runtime::spawn_blocking(move || git::show_head(&root, &rel)).await.map_err(|e| CmdError(e.to_string()))
+}
+
+#[tauri::command]
+async fn git_push(app: AppHandle, req: String, root: String, remote_url: Option<String>) -> CmdResult<git::ProcResult> {
+    let root = checked(&app.state::<AppState>(), &root)?;
+    let mut steps: Vec<(String, Vec<String>)> = Vec::new();
+    if let Some(url) = remote_url.filter(|u| !u.trim().is_empty()) {
+        steps.push(("git".into(), vec!["remote".into(), "add".into(), "origin".into(), url]));
+    }
+    steps.push(("git".into(), vec!["push".into(), "-u".into(), "origin".into(), "HEAD".into()]));
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || git::run_steps(&app2, &req, &root, &steps))
+        .await
+        .map_err(|e| CmdError(e.to_string()))
+}
+
+/// Create a virtual environment in the project (fixed commands: venv, then optional pip install).
+#[tauri::command]
+async fn create_venv(
+    app: AppHandle,
+    req: String,
+    root: String,
+    name: String,
+    base_python: String,
+    install_kernel: bool,
+) -> CmdResult<git::ProcResult> {
+    let root = checked(&app.state::<AppState>(), &root)?;
+    if !git::valid_venv_name(&name) {
+        return Err(CmdError(format!("Invalid environment name: {name}")));
+    }
+    project::check_python(&base_python)?;
+    let target = root.join(&name);
+    let mut steps = vec![(base_python, vec!["-m".into(), "venv".into(), target.to_string_lossy().into_owned()])];
+    if install_kernel {
+        let py = if cfg!(windows) { target.join("Scripts/python.exe") } else { target.join("bin/python") };
+        steps.push((
+            py.to_string_lossy().into_owned(),
+            vec!["-m".into(), "pip".into(), "install".into(), "jupyter_client".into(), "ipykernel".into()],
+        ));
+    }
+    let app2 = app.clone();
+    let root2 = root.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || git::run_steps(&app2, &req, &root2, &steps))
+        .await
+        .map_err(|e| CmdError(e.to_string()))?;
+    if res.ok {
+        // keep the environment out of git
+        let gi = root.join(".gitignore");
+        if gi.exists() || root.join(".git").exists() {
+            let cur = std::fs::read_to_string(&gi).unwrap_or_default();
+            let entry = format!("{name}/");
+            let _ = std::fs::write(&gi, git::merge_gitignore(&cur, &[entry.as_str()]));
+        }
+    }
+    Ok(res)
+}
+
 /// Move a project file to the system Trash (recoverable).
 #[tauri::command]
 fn delete_file(state: State<'_, AppState>, path: String) -> CmdResult<()> {
@@ -211,7 +303,14 @@ pub fn run() {
             render,
             open_external,
             delete_file,
-            list_pythons
+            list_pythons,
+            git_status,
+            git_init,
+            git_commit,
+            git_set_identity,
+            git_show_head,
+            git_push,
+            create_venv
         ])
         .build(tauri::generate_context!())
         .expect("error while building Folio")

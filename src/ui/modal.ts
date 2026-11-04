@@ -3,9 +3,10 @@ import { h } from "./dom";
 export interface Field {
   name: string;
   label: string;
-  type?: "text" | "checkbox";
+  type?: "text" | "checkbox" | "select" | "textarea";
   value?: string | boolean;
   placeholder?: string;
+  options?: { value: string; label: string }[]; // for type "select"
 }
 
 export interface Choice {
@@ -43,11 +44,26 @@ export function formModal(title: string, fields: Field[], submit = "Create"): Pr
   return new Promise((resolve) => {
     const form = h("form", { class: "qo-box modal-box" });
     form.appendChild(h("div", { class: "modal-title" }, title));
-    const inputs = new Map<string, HTMLInputElement>();
+    const inputs = new Map<string, HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>();
     for (const f of fields) {
-      const input = h("input", { type: f.type ?? "text", name: f.name, placeholder: f.placeholder ?? "", spellcheck: "false" });
-      if (f.type === "checkbox") input.checked = !!f.value;
-      else input.value = String(f.value ?? "");
+      let input: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+      if (f.type === "select") {
+        const sel = h("select", { name: f.name });
+        for (const o of f.options ?? []) {
+          const opt = h("option", { value: o.value }, o.label);
+          if (o.value === f.value) opt.selected = true;
+          sel.appendChild(opt);
+        }
+        input = sel;
+      } else if (f.type === "textarea") {
+        input = h("textarea", { name: f.name, placeholder: f.placeholder ?? "", rows: "3" });
+        input.value = String(f.value ?? "");
+      } else {
+        const inp = h("input", { type: f.type ?? "text", name: f.name, placeholder: f.placeholder ?? "", spellcheck: "false" });
+        if (f.type === "checkbox") inp.checked = !!f.value;
+        else inp.value = String(f.value ?? "");
+        input = inp;
+      }
       inputs.set(f.name, input);
       form.appendChild(
         f.type === "checkbox"
@@ -65,11 +81,11 @@ export function formModal(title: string, fields: Field[], submit = "Create"): Pr
     form.onsubmit = (e) => {
       e.preventDefault();
       const out: Record<string, string | boolean> = {};
-      for (const [k, i] of inputs) out[k] = i.type === "checkbox" ? i.checked : i.value.trim();
+      for (const [k, i] of inputs) out[k] = i instanceof HTMLInputElement && i.type === "checkbox" ? i.checked : i.value.trim();
       close();
       resolve(out);
     };
-    (form.querySelector("input:not([type=checkbox])") as HTMLInputElement | null)?.focus();
+    (form.querySelector("input:not([type=checkbox]), select, textarea") as HTMLInputElement | null)?.focus();
   });
 }
 

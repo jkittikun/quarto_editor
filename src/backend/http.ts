@@ -1,4 +1,5 @@
-import type { Backend, KernelMsg, RenderResult, PythonEnv, RenderOptions } from "./types";
+import type { Backend, KernelMsg, RenderResult, PythonEnv, RenderOptions, ProcResult } from "./types";
+import type { GitStatus } from "../core/git";
 
 /** Backend used when running in a normal browser against the Vite dev server (`npm run dev`). */
 export class HttpBackend implements Backend {
@@ -16,6 +17,10 @@ export class HttpBackend implements Backend {
     es.addEventListener("kernel", (e) => {
       const msg = JSON.parse((e as MessageEvent).data);
       this.kernelCbs.forEach((cb) => cb(msg));
+    });
+    es.addEventListener("proc", (e) => {
+      const ev = JSON.parse((e as MessageEvent).data);
+      this.renderCbs.get(ev.req)?.(ev);
     });
     es.addEventListener("render", (e) => {
       const ev = JSON.parse((e as MessageEvent).data);
@@ -89,6 +94,44 @@ export class HttpBackend implements Backend {
         reject(e);
       });
     });
+  }
+  /** Long-running server process with streamed lines (venv creation, git push). */
+  private proc(path: string, body: Record<string, unknown>, onLog: (line: string) => void): Promise<ProcResult> {
+    const req = "p" + Math.random().toString(36).slice(2);
+    return new Promise((resolve, reject) => {
+      this.renderCbs.set(req, (ev) => {
+        if (ev.line !== undefined) onLog(ev.line);
+        if (ev.done) {
+          this.renderCbs.delete(req);
+          resolve(ev.result);
+        }
+      });
+      this.api(path, { req, ...body }).catch((e) => {
+        this.renderCbs.delete(req);
+        reject(e);
+      });
+    });
+  }
+  createVenv(root: string, name: string, basePython: string, installKernel: boolean, onLog: (line: string) => void) {
+    return this.proc("/api/venv", { root, name, basePython, installKernel }, onLog);
+  }
+  async gitStatus(root: string) {
+    return (await this.api("/api/git/status", { root })) as GitStatus;
+  }
+  async gitInit(root: string) {
+    return (await this.api("/api/git/init", { root })) as ProcResult;
+  }
+  async gitCommit(root: string, message: string) {
+    return (await this.api("/api/git/commit", { root, message })) as ProcResult;
+  }
+  async gitSetIdentity(root: string, name: string, email: string) {
+    return (await this.api("/api/git/identity", { root, name, email })) as ProcResult;
+  }
+  async gitShowHead(root: string, rel: string) {
+    return ((await this.api("/api/git/show", { root, rel })) as { content: string | null }).content;
+  }
+  gitPush(root: string, remoteUrl: string | null, onLog: (line: string) => void) {
+    return this.proc("/api/git/push", { root, remoteUrl }, onLog);
   }
   async openExternal(pathOrUrl: string) {
     window.open(pathOrUrl.startsWith("/") ? this.fileUrl(pathOrUrl) : pathOrUrl, "_blank");

@@ -117,6 +117,14 @@ when you launch it from Finder.
 * **New document:** the **＋** button in the sidebar creates a `.qmd` file. In a book, it can
   also add the file to `book.chapters` right after the current chapter. Folio edits `_quarto.yml` as
   text, so your comments and formatting are kept.
+* **Source control** (branch icon in the top bar, ⌘⇧G): a right-hand panel that uses the git
+  installed on your Mac, with your usual GitHub login (SSH key or Keychain).
+  * **Initialize repository** creates a `.gitignore` for build output, `.folio/` and `.venv/`.
+  * The panel lists changed files, and has a commit box (⌘↵ to commit) and **Push**. When there's no
+    remote yet, Push shows **Publish…** and asks for a URL.
+  * It also shows a live diff of the open chapter against the last commit; click a change to jump to
+    it.
+* **Line numbers:** toggle with the # button in the top bar (⌘⇧L).
 * **Project settings:** **⚙** in the sidebar opens `_quarto.yml` in a plain YAML editor. When you save,
   the sidebar, numbering and bibliography reload, and YAML errors show in the status bar.
 * **Empty folder:** opening a folder with no Quarto files shows a start screen where you can create a
@@ -129,7 +137,9 @@ when you launch it from Finder.
   environments in the project (`.venv`, `venv`, `env`, or any folder with `pyvenv.cfg`), conda
   environments, pyenv versions and system Pythons. It flags interpreters that are missing
   `ipykernel`, and you can also enter a path. Folio remembers your choice per project and also
-  passes it to Quarto as `QUARTO_PYTHON`.
+  passes it to Quarto as `QUARTO_PYTHON`. When the project has no virtual environment, the picker
+  offers **＋ Create virtual environment (.venv)**: pick a base Python, and optionally install
+  `jupyter_client` and `ipykernel` in one step.
 * **Export PDF** (top bar): runs `quarto render --to pdf`, for the whole book or for the current
   document. This needs a LaTeX installation; `quarto install tinytex` is the easiest.
 * **Layout:** kernel and render controls live in the bottom bar. Drag the sidebar edge to resize it
@@ -156,6 +166,8 @@ when you launch it from Finder.
 | ⌘1 / ⌘2 / ⌘3 | Edit / Source / Reader view |
 | ⌘⇧E | Toggle Edit ↔ Source |
 | ⌘⌥R | Toggle Reader |
+| ⌘⇧G | Source control panel |
+| ⌘⇧L | Line numbers |
 | ⌘+ / ⌘− | Larger / smaller text (`A+` / `A−`) |
 | ⌘B / ⌘I / ⌘E | Bold / italic / inline code |
 | ⌘-click | Follow a cross-reference or link |
