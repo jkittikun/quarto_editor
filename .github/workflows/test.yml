@@ -39,6 +39,13 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
+      - name: Quarto renders the sample chapter on its own (diagnostic)
+        run: |
+          cp -r examples/book /tmp/book-check
+          cd /tmp/book-check
+          timeout 180 quarto render intro.qmd < /dev/null; echo "quarto exit=$?"
+          ls -la _book | head
+
       - name: End-to-end tests
         run: npm run e2e
 

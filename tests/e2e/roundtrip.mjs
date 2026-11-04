@@ -178,6 +178,11 @@ try {
     ok(done && title.includes("complete"), `quarto render finished (${title}, ${((Date.now() - t0) / 1000).toFixed(1)} s${FAKE_QUARTO ? ", fake quarto" : ""})`);
     ok(existsSync(join(book, "_book/intro.html")), "_book/intro.html exists");
     if (!title.includes("complete")) console.log((await page.locator("#log").innerText()).split("\n").slice(-30).join("\n"));
+    if (!title.includes("complete")) {
+      try {
+        console.log(execSync("ps -ef --forest | grep -i -E 'quarto|deno|pandoc|python|sass|esbuild' | grep -v grep", { encoding: "utf8" }));
+      } catch {}
+    }
   } else {
     console.log("- quarto not on PATH: skipping render test");
   }

@@ -164,7 +164,12 @@ export function folioApi(opts: { defaultRoot?: string; kernelScript: string }): 
               const { req: id, root, target } = await body(req);
               const cwd = allowed(root);
               const args = ["render", ...(target ? [allowed(target)] : [])];
-              const child = spawn(process.env.QUARTO_PATH ?? "quarto", args, { cwd, env: { ...process.env, QUARTO_PYTHON: findPython(cwd) } });
+              // stdin must be closed: quarto can block waiting on an open stdin pipe and never exit.
+              const child = spawn(process.env.QUARTO_PATH ?? "quarto", args, {
+                cwd,
+                env: { ...process.env, QUARTO_PYTHON: findPython(cwd) },
+                stdio: ["ignore", "pipe", "pipe"],
+              });
               let output: string | null = null;
               const onLine = (line: string) => {
                 const m = /Output created:\s*(.+)$/.exec(line);
