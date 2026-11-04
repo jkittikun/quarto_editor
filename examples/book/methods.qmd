@@ -3,6 +3,12 @@
 We build on @sec-intro and @tbl-models [see also @knuth84; @xie2018].
 
 ```{python}
+#| include: false
+import numpy as np
+import matplotlib.pyplot as plt
+```
+
+```{python}
 #| label: fig-sine
 #| fig-cap: "A sine wave"
 import numpy as np
@@ -13,6 +19,7 @@ plt.show()
 ```
 
 ```{python}
+#| echo: false
 import pandas as pd
 pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
 ```

@@ -7,6 +7,8 @@ import type { KernelOutput } from "../backend/types";
 export interface FrozenCell {
   index: number;
   outputs: KernelOutput[];
+  label: string | null; // `#| label:` of the cell (the cell div's id)
+  code: string | null; // echoed source (absent when echo: false)
 }
 
 /** Path of the freeze file for a chapter, relative to the project root. */
@@ -24,24 +26,38 @@ interface Block {
   body: string[];
 }
 
-/** Split markdown into top-level `.cell` divs, each with its `.cell-output*` child divs. */
-function cellsOf(markdown: string): Block[][] {
+interface CellBlock {
+  attrs: string;
+  code: string[] | null;
+  outputs: Block[];
+}
+
+/** Split markdown into top-level `.cell` divs, each with its echoed code and `.cell-output*` divs. */
+function cellsOf(markdown: string): CellBlock[] {
   const lines = markdown.split(/\r?\n/);
-  const cells: Block[][] = [];
+  const cells: CellBlock[] = [];
   let depth = 0;
-  let cur: Block[] | null = null;
+  let cur: CellBlock | null = null;
+  let codeLines: string[] | null = null;
   let out: Block | null = null;
   let outDepth = -1;
   let fence: string | null = null;
   for (const line of lines) {
     const f = FENCE.exec(line);
     if (fence) {
-      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !f[2].trim()) fence = null;
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !f[2].trim()) {
+        fence = null;
+        codeLines = null;
+      } else codeLines?.push(line);
       out?.body.push(line);
       continue;
     }
     if (f) {
       fence = f[1];
+      if (cur && !out && /\.cell-code/.test(f[2])) {
+        cur.code = [];
+        codeLines = cur.code;
+      }
       out?.body.push(line);
       continue;
     }
@@ -50,12 +66,12 @@ function cellsOf(markdown: string): Block[][] {
       depth++;
       const attrs = o[2];
       if (depth === 1 && /(^|\s)\.cell(\s|$)/.test(attrs)) {
-        cur = [];
+        cur = { attrs, code: null, outputs: [] };
         cells.push(cur);
       } else if (cur && !out && /\.cell-output/.test(attrs)) {
         out = { classes: attrs, body: [] };
         outDepth = depth;
-        cur.push(out);
+        cur.outputs.push(out);
       } else out?.body.push(line);
       continue;
     }
@@ -102,9 +118,10 @@ export function parseFreeze(json: string, freezeDirAbs: string): FrozenCell[] {
     return [];
   }
   const md: string = data?.result?.markdown ?? "";
-  return cellsOf(md).map((blocks, index) => {
+  return cellsOf(md).map((cell, index) => {
     const outputs: KernelOutput[] = [];
-    for (const b of blocks) {
+    const label = /#([\w:.-]+)/.exec(cell.attrs)?.[1] ?? null;
+    for (const b of cell.outputs) {
       const code = fencedContent(b.body);
       if (/cell-output-stdout/.test(b.classes) || /cell-output-stderr/.test(b.classes)) {
         const name = /stderr/.test(b.classes) ? "stderr" : "stdout";
@@ -133,6 +150,59 @@ export function parseFreeze(json: string, freezeDirAbs: string): FrozenCell[] {
         }
       }
     }
-    return { index, outputs };
+    return { index, outputs, label, code: cell.code ? cell.code.join("\n") : null };
   });
+}
+
+/** Strip `#|` cell-option lines and surrounding blank lines, for comparing code. */
+export function codeBody(code: string): string {
+  return code
+    .split("\n")
+    .filter((l) => !/^\s*(#|%%|\/\/)\|/.test(l))
+    .join("\n")
+    .trim();
+}
+
+export interface DocCell {
+  index: number; // position among all document cells
+  code: string;
+  options: Record<string, string>;
+}
+
+/**
+ * Align frozen cells with the document's executable cells. Quarto writes nothing for
+ * `include: false` cells, so position alone is wrong; match by label, then by code, then by order
+ * among the remaining cells. Returns frozen-cell index → document cell index.
+ */
+export function matchFrozen(docCells: DocCell[], frozen: FrozenCell[]): Map<number, number> {
+  const candidates = docCells.filter((c) => c.options.include !== "false");
+  const result = new Map<number, number>();
+  const used = new Set<number>();
+  const take = (f: FrozenCell, c: DocCell | undefined) => {
+    if (!c || used.has(c.index)) return false;
+    used.add(c.index);
+    result.set(f.index, c.index);
+    return true;
+  };
+  for (const f of frozen) if (f.label) take(f, candidates.find((c) => c.options.label === f.label));
+  for (const f of frozen) {
+    if (result.has(f.index) || !f.code) continue;
+    const body = codeBody(f.code);
+    take(f, candidates.find((c) => !used.has(c.index) && codeBody(c.code) === body));
+  }
+  // remaining: keep order — each unmatched frozen cell takes the next unused candidate after the
+  // previously matched one
+  let cursor = -1;
+  for (const f of frozen) {
+    if (result.has(f.index)) {
+      cursor = Math.max(cursor, candidates.findIndex((c) => c.index === result.get(f.index)));
+      continue;
+    }
+    const next = candidates.findIndex((c, i) => i > cursor && !used.has(c.index));
+    if (next >= 0) {
+      take(f, candidates[next]);
+      cursor = next;
+    }
+  }
+  return result;
 }

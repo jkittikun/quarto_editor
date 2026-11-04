@@ -134,6 +134,10 @@ when you launch it from Finder.
   document. This needs a LaTeX installation; `quarto install tinytex` is the easiest.
 * **Layout:** kernel and render controls live in the bottom bar. Drag the sidebar edge to resize it
   (double-click resets it; the width isn't remembered between launches).
+* **Reader view:** **📖 Reader** (⌘⌥R) shows the chapter read-only, the way the HTML book will look.
+  Cells follow their options, PDF-only content is hidden, and footnotes are listed at the end.
+* **Hover previews:** hover a cross-reference (`@fig-…`, `@tbl-…`, `@eq-…`, `@thm-…`, `@sec-…`), a
+  citation or a footnote to preview it.
 * **Raw source:** **`</>`** switches between live preview and the plain `.qmd` text.
   **A− / A+** change the text size.
 
@@ -146,6 +150,7 @@ when you launch it from Finder.
 | ⌘↵ / ⇧↵ | Run cell / run cell and move to the next |
 | ⌘⌥↵ | Run all cells above the cursor |
 | ⌘⇧E | Toggle raw source view (`</>`) |
+| ⌘⌥R | Toggle reader view |
 | ⌘+ / ⌘− | Larger / smaller text (`A+` / `A−`) |
 | ⌘B / ⌘I / ⌘E | Bold / italic / inline code |
 | ⌘-click | Follow a cross-reference or link |
@@ -174,7 +179,13 @@ when you launch it from Finder.
 | Reveal.js presentations (`format: revealjs`) | ✅ slide dividers with slide numbers |
 | YAML front matter | ✅ title + metadata chips |
 | `[@cite]`, `@cite`, `@fig-x` etc. | ✅ resolved across the book |
-| Shortcodes `{{< … >}}` | shown as code chips |
+| Shortcodes `{{< … >}}` | shown as code chips; `{{< include file.qmd >}}` shows the included file inline |
+| Cell options `include`, `echo`, `output`, `eval` | ✅ collapsed while editing, hidden as in the book in reader view |
+| `\index{…}`, `\newpage`, `\label{…}` and other LaTeX-only commands | ✅ hidden (🔖 marker for index entries) |
+| Footnotes `[^id]`, `^[inline]` | ✅ numbered superscripts, hover to read, listed at the end in reader view |
+| `.column-margin`, `.aside` | ✅ in the right margin on wide windows |
+| `.content-visible` / `.content-hidden` (`when-format`, `unless-format`) | ✅ labelled ("PDF only"); reader view shows what the HTML book shows |
+| ```` ```{=latex} ```` and `` `…`{=latex} `` | ✅ compact "LaTeX · PDF only" chip |
 | `{r}`/`{julia}` cells, Observable JS | syntax-highlighted only; use **Render** (their `_freeze` outputs still show) |
 
 ## Project layout

@@ -200,6 +200,71 @@ const attributes = {
   },
 };
 
+/** LaTeX-only inline commands that have no HTML output: \index{..}, \label{..}, \newpage, … */
+const LATEX_CMDS = /^\\(index|label|newpage|clearpage|cleardoublepage|noindent|pagebreak|vspace|hspace|vfill|hfill|smallskip|medskip|bigskip)\b/;
+const latexCommand = {
+  name: "LatexCommand",
+  before: "Escape",
+  parse(cx: InlineContext, next: number, pos: number) {
+    if (next !== BACKSLASH) return -1;
+    const head = LATEX_CMDS.exec(cx.slice(pos, Math.min(cx.end, pos + 20)));
+    if (!head) return -1;
+    let end = pos + head[0].length;
+    while (cx.char(end) === 42 /* * */) end++;
+    // optional [..] and {..} arguments with balanced braces
+    while (cx.char(end) === BRACKET || cx.char(end) === BRACE) {
+      const open = cx.char(end);
+      const close = open === BRACE ? 125 : 93;
+      let depth = 0;
+      let i = end;
+      for (; i < cx.end; i++) {
+        const ch = cx.char(i);
+        if (ch === BACKSLASH) {
+          i++;
+          continue;
+        }
+        if (ch === open) depth++;
+        else if (ch === close && --depth === 0) break;
+      }
+      if (i >= cx.end) return -1;
+      end = i + 1;
+    }
+    return cx.addElement(cx.elt("LatexCommand", pos, end));
+  },
+};
+
+/** Footnote reference `[^id]`. */
+const footnoteRef = {
+  name: "FootnoteRef",
+  before: "Link",
+  parse(cx: InlineContext, next: number, pos: number) {
+    if (next !== BRACKET || cx.char(pos + 1) !== 94 /* ^ */) return -1;
+    const m = /^\[\^([^\]\s]+)\](?!:)/.exec(cx.slice(pos, Math.min(cx.end, pos + 100)));
+    if (!m) return -1;
+    return cx.addElement(cx.elt("FootnoteRef", pos, pos + m[0].length));
+  },
+};
+
+/** Inline footnote `^[text]`. */
+const inlineFootnote = {
+  name: "InlineFootnote",
+  before: "Emphasis",
+  parse(cx: InlineContext, next: number, pos: number) {
+    if (next !== 94 || cx.char(pos + 1) !== BRACKET) return -1;
+    let depth = 0;
+    for (let i = pos + 1; i < cx.end; i++) {
+      const ch = cx.char(i);
+      if (ch === BACKSLASH) {
+        i++;
+        continue;
+      }
+      if (ch === BRACKET) depth++;
+      else if (ch === 93 && --depth === 0) return cx.addElement(cx.elt("InlineFootnote", pos, i + 1));
+    }
+    return -1;
+  },
+};
+
 export const quartoMarkdown: MarkdownConfig = {
   defineNodes: [
     { name: "FrontMatter", block: true, style: t.meta },
@@ -213,7 +278,10 @@ export const quartoMarkdown: MarkdownConfig = {
     { name: "AtRef", style: t.link },
     { name: "Shortcode", style: t.macroName },
     { name: "Attributes", style: t.attributeName },
+    { name: "LatexCommand", style: t.macroName },
+    { name: "FootnoteRef", style: t.link },
+    { name: "InlineFootnote", style: t.link },
   ],
   parseBlock: [frontMatter, displayMath, divFence],
-  parseInline: [inlineMath, citation, atRef, shortcode, attributes],
+  parseInline: [inlineMath, latexCommand, footnoteRef, inlineFootnote, citation, atRef, shortcode, attributes],
 };

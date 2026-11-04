@@ -269,19 +269,21 @@ export class CellHeaderWidget extends WidgetType {
     readonly executable: boolean,
     readonly running: boolean,
     readonly fencePos: number,
+    readonly noEval = false,
   ) {
     super();
   }
   eq(o: CellHeaderWidget) {
-    return o.lang === this.lang && o.label === this.label && o.executable === this.executable && o.running === this.running && o.fencePos === this.fencePos;
+    return o.lang === this.lang && o.label === this.label && o.executable === this.executable && o.running === this.running && o.fencePos === this.fencePos && o.noEval === this.noEval;
   }
   toDOM(view: EditorView) {
     const d = el("span", "cm-cell-head");
     d.appendChild(el("span", "cm-cell-lang", escapeHtml(this.lang || "code")));
     if (this.label) d.appendChild(el("span", "cm-cell-label", escapeHtml(this.label)));
-    if (this.executable && this.lang === "python") {
-      const b = el("button", "cm-cell-run cm-no-reveal", this.running ? "◼ Running…" : "▶ Run");
-      b.title = "Run cell (⌘↵)";
+    if (this.executable && this.lang === "python" && !ctx.reader) {
+      const b = el("button", "cm-cell-run cm-no-reveal", this.running ? "◼ Running…" : this.noEval ? "eval: false" : "▶ Run");
+      b.title = this.noEval ? "This cell has eval: false — it won't be run" : "Run cell (⌘↵)";
+      if (this.noEval) b.setAttribute("disabled", "");
       b.addEventListener("mousedown", (e) => {
         e.preventDefault();
         ctx.runCell(view, this.fencePos);
@@ -436,22 +438,7 @@ export class TableWidget extends WidgetType {
   }
   toDOM(view: EditorView) {
     const wrap = el("div", "cm-table-wrap");
-    const rows = this.src.split("\n").filter((l) => l.trim());
-    const split = (l: string) => {
-      let s = l.trim();
-      if (s.startsWith("|")) s = s.slice(1);
-      if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
-      return s.split(/(?<!\\)\|/).map((c) => c.trim());
-    };
-    const aligns = rows.length > 1 ? split(rows[1]).map((c) => (c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : "left")) : [];
-    let html = "";
-    if (this.caption) {
-      const t = this.label ? ctx.index.targets.get(this.label) : null;
-      html += `<caption>${t ? `<span class="cm-cap-label">${escapeHtml(t.display)}:</span> ` : ""}${md(this.caption)}</caption>`;
-    }
-    html += "<thead><tr>" + split(rows[0]).map((c, i) => `<th style="text-align:${aligns[i] ?? "left"}">${md(c)}</th>`).join("") + "</tr></thead><tbody>";
-    for (const r of rows.slice(2)) html += "<tr>" + split(r).map((c, i) => `<td style="text-align:${aligns[i] ?? "left"}">${md(c)}</td>`).join("") + "</tr>";
-    wrap.appendChild(el("table", "cm-table", html + "</tbody>"));
+    wrap.innerHTML = tableHtml(this.src, this.caption, this.label);
     revealOnClick(wrap, view, () => this.pos);
     return wrap;
   }
@@ -577,5 +564,208 @@ export class HiddenBlockWidget extends WidgetType {
   }
   get estimatedHeight() {
     return 0;
+  }
+}
+
+/** Collapsed stand-in for a cell hidden by its options (include: false / echo: false). */
+export class HiddenCellWidget extends WidgetType {
+  constructor(readonly text: string, readonly pos: number) {
+    super();
+  }
+  eq(o: HiddenCellWidget) {
+    return o.text === this.text && o.pos === this.pos;
+  }
+  toDOM(view: EditorView) {
+    const d = el("div", "cm-hidden-cell");
+    d.appendChild(el("span", "cm-hidden-cell-chip", `▸ ${escapeHtml(this.text)}`));
+    d.title = "Click to show the code";
+    revealOnClick(d, view, () => this.pos);
+    return d;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
+/** Several block widgets rendered as one (e.g. a hidden-code chip followed by the cell's output). */
+export class StackWidget extends WidgetType {
+  constructor(readonly parts: WidgetType[]) {
+    super();
+  }
+  eq(o: StackWidget) {
+    return o.parts.length === this.parts.length && o.parts.every((p, i) => p.constructor === this.parts[i].constructor && this.parts[i].eq(p as any));
+  }
+  toDOM(view: EditorView) {
+    const d = el("div", "cm-stack");
+    for (const p of this.parts) d.appendChild(p.toDOM(view));
+    return d;
+  }
+  ignoreEvent() {
+    return false;
+  }
+  get estimatedHeight() {
+    return this.parts.reduce((h, p) => h + Math.max(0, p.estimatedHeight), 0);
+  }
+}
+
+/** HTML for a pipe table with an optional (numbered) caption. */
+export function tableHtml(src: string, caption: string | null, label: string | null): string {
+  const rows = src.split("\n").filter((l) => l.trim());
+  const split = (l: string) => {
+    let s = l.trim();
+    if (s.startsWith("|")) s = s.slice(1);
+    if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+    return s.split(/(?<!\\)\|/).map((c) => c.trim());
+  };
+  const aligns = rows.length > 1 ? split(rows[1]).map((c) => (c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : "left")) : [];
+  let html = "";
+  if (caption) {
+    const t = label ? ctx.index.targets.get(label) : null;
+    html += `<caption>${t ? `<span class="cm-cap-label">${escapeHtml(t.display)}:</span> ` : ""}${md(caption)}</caption>`;
+  }
+  html += "<thead><tr>" + split(rows[0] ?? "").map((c, i) => `<th style="text-align:${aligns[i] ?? "left"}">${md(c)}</th>`).join("") + "</tr></thead><tbody>";
+  for (const r of rows.slice(2)) html += "<tr>" + split(r).map((c, i) => `<td style="text-align:${aligns[i] ?? "left"}">${md(c)}</td>`).join("") + "</tr>";
+  return `<table class="cm-table">${html}</tbody></table>`;
+}
+
+/** Superscript footnote marker; the note HTML is shown by the hover card. */
+export class FootnoteWidget extends WidgetType {
+  constructor(readonly num: number, readonly noteHtml: string, readonly id: string) {
+    super();
+  }
+  eq(o: FootnoteWidget) {
+    return o.num === this.num && o.noteHtml === this.noteHtml;
+  }
+  toDOM() {
+    const s = el("sup", "cm-fn", String(this.num));
+    s.dataset.fn = this.id;
+    (s as any).folioPreview = () => `<div class="pv"><div class="pv-head">Note ${this.num}</div>${this.noteHtml || '<span class="pv-muted">No text for this footnote yet.</span>'}</div>`;
+    return s;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
+/** "Footnotes" list shown at the end of the document in reader view. */
+export class FootnotesListWidget extends WidgetType {
+  constructor(readonly notes: { num: number; html: string }[]) {
+    super();
+  }
+  eq(o: FootnotesListWidget) {
+    return JSON.stringify(o.notes) === JSON.stringify(this.notes);
+  }
+  toDOM() {
+    const d = el("section", "cm-footnotes");
+    d.appendChild(el("div", "cm-footnotes-title", "Footnotes"));
+    const ol = el("ol");
+    for (const n of this.notes) {
+      const li = el("li", "", n.html);
+      li.value = n.num;
+      ol.appendChild(li);
+    }
+    d.appendChild(ol);
+    return d;
+  }
+}
+
+/** Margin note (.column-margin / .aside): floats in the right margin on wide screens. */
+export class MarginWidget extends WidgetType {
+  constructor(readonly html: string, readonly pos: number) {
+    super();
+  }
+  eq(o: MarginWidget) {
+    return o.html === this.html;
+  }
+  toDOM(view: EditorView) {
+    const d = el("div", "cm-margin");
+    const inner = el("aside", "cm-margin-note", this.html);
+    d.appendChild(inner);
+    revealOnClick(inner, view, () => this.pos);
+    return d;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
+/** Collapsed raw block / inline raw content (e.g. {=latex}) or a LaTeX-only command. */
+export class ChipWidget extends WidgetType {
+  constructor(readonly text: string, readonly title: string, readonly pos: number, readonly block = false) {
+    super();
+  }
+  eq(o: ChipWidget) {
+    return o.text === this.text && o.title === this.title && o.block === this.block;
+  }
+  toDOM(view: EditorView) {
+    const d = el(this.block ? "div" : "span", this.block ? "cm-raw-block" : "cm-raw-inline");
+    d.appendChild(el("span", "cm-chip cm-raw-chip", escapeHtml(this.text)));
+    d.title = this.title;
+    if (this.block) revealOnClick(d, view, () => this.pos);
+    return d;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
+/** Small marker for a hidden \index{term}. */
+export class IndexMarkWidget extends WidgetType {
+  constructor(readonly term: string) {
+    super();
+  }
+  eq(o: IndexMarkWidget) {
+    return o.term === this.term;
+  }
+  toDOM() {
+    const s = el("span", "cm-index-mark", "🔖");
+    s.title = `Index entry: ${this.term}`;
+    (s as any).folioPreview = () => `<div class="pv"><div class="pv-head">Index entry</div>${escapeHtml(this.term)}</div>`;
+    return s;
+  }
+}
+
+/** Read-only, live-rendered view of a file pulled in with {{< include file >}}. */
+export class IncludeWidget extends WidgetType {
+  static depth = 0;
+  constructor(readonly path: string, readonly rel: string, readonly text: string | null, readonly pos: number) {
+    super();
+  }
+  eq(o: IncludeWidget) {
+    return o.path === this.path && o.text === this.text;
+  }
+  toDOM(view: EditorView) {
+    const d = el("div", "cm-include");
+    const head = el("div", "cm-include-head");
+    head.appendChild(el("span", "", `Included from <b>${escapeHtml(this.rel)}</b>`));
+    const open = el("button", "cm-no-reveal", "Open");
+    open.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      ctx.openFile(this.path);
+    });
+    head.appendChild(open);
+    d.appendChild(head);
+    const body = el("div", "cm-include-body");
+    if (this.text === null) body.appendChild(el("div", "cm-muted", "Loading…"));
+    else if (IncludeWidget.depth >= 3) body.appendChild(el("div", "cm-muted", "Include nested too deeply"));
+    else {
+      IncludeWidget.depth++;
+      try {
+        ctx.makeIncludeView(body, this.text);
+      } finally {
+        IncludeWidget.depth--;
+      }
+    }
+    d.appendChild(body);
+    head.addEventListener("mousedown", (e) => {
+      if ((e.target as HTMLElement).closest("button")) return;
+      e.preventDefault();
+      view.dispatch({ selection: { anchor: this.pos }, effects: activateEffect.of(null) });
+      view.focus();
+    });
+    return d;
+  }
+  ignoreEvent() {
+    return true;
   }
 }

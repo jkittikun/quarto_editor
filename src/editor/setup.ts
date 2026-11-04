@@ -1,4 +1,4 @@
-import { Compartment, EditorSelection, type EditorState, type Extension } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap, drawSelection, dropCursor, rectangularSelection, placeholder } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
@@ -12,6 +12,7 @@ import { quartoMarkdown } from "./quartoSyntax";
 import { livePreviewField, livePreviewHandlers, tabsField, focusField, focusTracking, collapsedField } from "./livePreview";
 import { outputsField, listCells } from "./cells";
 import { quartoCompletion } from "./completion";
+import { hoverPreviews } from "./hover";
 import { ctx } from "./context";
 
 const highlight = HighlightStyle.define([
@@ -118,7 +119,35 @@ export function fileKind(path: string): FileKind {
 
 /** Live preview can be switched off (raw source view) without rebuilding the editor state. */
 export const previewCompartment = new Compartment();
-export const previewExtensions = (on: boolean): Extension => (on ? [livePreviewField, livePreviewHandlers] : []);
+export const previewExtensions = (on: boolean): Extension => (on ? [livePreviewField, livePreviewHandlers, hoverPreviews] : []);
+
+/** Reader view: read-only, rendered like the book. */
+export const readerCompartment = new Compartment();
+export const readerExtensions = (on: boolean): Extension => (on ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []);
+
+/** Mount a read-only live-preview view of included content (used by IncludeWidget). */
+ctx.makeIncludeView = (parent, text) => {
+  new EditorView({
+    parent,
+    state: EditorState.create({
+      doc: text,
+      extensions: [
+        EditorState.readOnly.of(true),
+        EditorView.editable.of(false),
+        EditorView.lineWrapping,
+        markdown({ base: markdownLanguage, codeLanguages, extensions: [quartoMarkdown] }),
+        syntaxHighlighting(highlight),
+        outputsField,
+        tabsField,
+        collapsedField,
+        focusField,
+        livePreviewField,
+        hoverPreviews,
+        EditorView.theme({ ".cm-scroller": { fontFamily: "var(--sans)", lineHeight: "1.7" }, ".cm-content": { padding: "0 !important" } }),
+      ],
+    }),
+  });
+};
 
 export interface SetupOptions {
   onChange: (state: EditorState) => void;
@@ -126,6 +155,7 @@ export interface SetupOptions {
   extraKeys?: { key: string; run: () => boolean }[];
   kind?: FileKind;
   preview?: boolean;
+  reader?: boolean;
 }
 
 export function editorExtensions(opts: SetupOptions): Extension[] {
@@ -175,12 +205,14 @@ export function editorExtensions(opts: SetupOptions): Extension[] {
     focusTracking,
     EditorView.theme({ ".cm-scroller": { fontFamily: "var(--sans)", lineHeight: "1.7" } }),
     previewCompartment.of(previewExtensions(opts.preview ?? true)),
+    readerCompartment.of(readerExtensions(opts.reader ?? false)),
     remeasureOnResize,
     quartoCompletion,
     keymap.of([
       { key: "Mod-Enter", run: (v) => runCellAtCursor(v, false) },
       { key: "Shift-Enter", run: (v) => runCellAtCursor(v, true) },
       { key: "Mod-Alt-Enter", run: (v) => (ctx.runAbove(v), true) },
+      { key: "Mod-Alt-r", run: () => (ctx.toggleReader(), true), preventDefault: true },
       { key: "Mod-b", run: wrapSelection("**") },
       { key: "Mod-i", run: wrapSelection("*") },
       { key: "Mod-e", run: wrapSelection("`") },

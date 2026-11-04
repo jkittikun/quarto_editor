@@ -1,6 +1,24 @@
 # Summary
 
-In summary, this book has no content whatsoever.
+In summary, this book has no content whatsoever. Structural health monitoring\index{structural health monitoring} (SHM) is a recurring theme[^shm], and so are sensors^[Accelerometers, strain gauges and fibre-optic sensors.].
+
+[^shm]: SHM combines sensing, signal processing and statistical decision making.
+
+::: {.column-margin}
+**Margin note.** Margin content sits beside the text on wide screens, as in the HTML book.
+:::
+
+::: {.content-visible when-format="pdf"}
+This paragraph only appears in the PDF version.
+:::
+
+```{=latex}
+\begin{center}
+\textit{Typeset only in the PDF.}
+\end{center}
+```
+
+{{< include _shared.qmd >}}
 
 :::: {.columns}
 

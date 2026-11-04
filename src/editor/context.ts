@@ -19,6 +19,14 @@ export interface EditorContext {
   kernelAvailable: boolean;
   /** Output formats declared by the project (_quarto.yml `format:` keys). */
   projectFormats: string[];
+  /** Reader view: read-only, rendered like the HTML book (no source reveal). */
+  reader: boolean;
+  /** Source text of another project file (absolute path), or null if not loaded yet (loading starts). */
+  sourceOf(absPath: string): string | null;
+  openFile(absPath: string): void;
+  /** Mount a read-only live-preview editor for included content. */
+  makeIncludeView(parent: HTMLElement, text: string): void;
+  toggleReader(): void;
 }
 
 export const ctx: EditorContext = {
@@ -35,6 +43,11 @@ export const ctx: EditorContext = {
   runAbove: () => {},
   kernelAvailable: true,
   projectFormats: [],
+  reader: false,
+  sourceOf: () => null,
+  openFile: () => {},
+  makeIncludeView: () => {},
+  toggleReader: () => {},
 };
 
 /** Dispatch to force decorations to be recomputed after the context changed. */

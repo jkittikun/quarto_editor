@@ -411,3 +411,80 @@ button.danger:hover { background: color-mix(in srgb, var(--important) 85%, black
 .pick-item small { grid-column: 1 / -1; color: var(--muted); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
 .pick-item.sel { background: var(--accent-soft); }
 .pick-badge { font-size: 10.5px; color: var(--warning); border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; align-self: center; }
+
+/* ---------- round 4 ---------- */
+/* hidden cells (include: false / echo: false) */
+.cm-hidden-cell { padding: 2px 0 4px; cursor: pointer; }
+.cm-hidden-cell-chip {
+  display: inline-block; font: 11.5px var(--mono); color: var(--muted); background: var(--bg-code);
+  border: 1px dashed var(--border); border-radius: 6px; padding: 2px 8px;
+}
+.cm-hidden-cell:hover .cm-hidden-cell-chip { color: var(--fg-soft); border-color: var(--muted); }
+.cm-cell-run[disabled] { color: var(--muted); cursor: default; }
+
+/* LaTeX-only commands, raw blocks */
+.cm-index-mark { font-size: 10px; opacity: .45; cursor: help; vertical-align: super; }
+.cm-index-mark:hover { opacity: 1; }
+.cm-latex-src { font-family: var(--mono); font-size: .85em; color: var(--code-keyword); }
+.cm-raw-chip { font-family: var(--mono); }
+.cm-raw-block { padding: 2px 0 4px; cursor: text; }
+.cm-raw-inline .cm-chip { font-size: 10.5px; }
+.cm-cond-label { background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 0 8px; font-family: var(--sans); }
+
+/* footnotes */
+.cm-fn { color: var(--accent); cursor: help; font-size: .72em; padding: 0 1px; font-weight: 600; }
+.cm-fn-def { font-size: .9em; color: var(--fg-soft); }
+.cm-fn-def-num sup { color: var(--accent); font-weight: 600; margin-right: 4px; }
+.cm-footnotes { border-top: 1px solid var(--border); margin-top: 2em; padding-top: .6em; font-size: .9em; color: var(--fg-soft); }
+.cm-footnotes-title { font-weight: 700; color: var(--fg); margin-bottom: 4px; }
+.cm-footnotes ol { margin: 0; padding-left: 1.6em; }
+
+/* margin notes: in the right margin on wide panes, inline aside otherwise */
+#editor { container-type: inline-size; }
+.cm-margin-note {
+  font-size: .82em; line-height: 1.5; color: var(--fg-soft); border-left: 2px solid var(--border);
+  padding: 2px 0 2px 10px; cursor: text;
+}
+.cm-margin-note > :first-child { margin-top: 0; }
+.cm-margin-note > :last-child { margin-bottom: 0; }
+.cm-margin-note img { max-width: 100%; }
+@container (min-width: 1180px) {
+  .cm-margin { position: relative; height: 0; }
+  .cm-margin-note { position: absolute; top: 0; left: calc(100% + 28px); width: min(240px, calc((100cqw - 780px) / 2 - 48px)); }
+}
+
+/* includes */
+.cm-include { border: 1px solid var(--border); border-radius: 8px; margin: 2px 0; overflow: hidden; }
+.cm-include-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 3px 10px;
+  font-size: 11.5px; color: var(--muted); background: var(--bg-soft); cursor: pointer;
+}
+.cm-include-head button { font-size: 11.5px; padding: 0 6px; }
+.cm-include-body { padding: 8px 14px; }
+.cm-include-body .cm-editor { font-size: inherit; }
+.cm-include-body .cm-scroller { overflow: visible; }
+
+/* hover cards */
+.hover-card {
+  position: fixed; z-index: 70; background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(0,0,0,.18); padding: 10px 14px; font-size: 13.5px; line-height: 1.5;
+  max-height: 60vh; overflow: auto; color: var(--fg);
+}
+.hover-card .pv + .pv { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+.pv-head { font-weight: 700; margin-bottom: 6px; }
+.pv-missing { color: var(--important); }
+.pv img { max-width: 100%; max-height: 260px; display: block; margin: 0 auto; border-radius: 4px; }
+.pv-cap, .pv-file, .pv-muted { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.pv-math { text-align: center; overflow-x: auto; }
+.pv .cm-table { font-size: 12.5px; }
+.pv p { margin: 4px 0; }
+
+/* reader view */
+.reader-toggle.active { background: var(--accent-soft); color: var(--accent); }
+body.reader-mode #toggle-source, body.reader-mode #run-above, body.reader-mode #run-all,
+body.reader-mode #kernel-interrupt, body.reader-mode #kernel-restart { display: none; }
+body.reader-mode .cm-cursor { display: none !important; }
+body.reader-mode .cm-cell-head .cm-cell-lang { opacity: .6; }
+body.reader-mode .cm-out-source { display: none; }
+.cm-include-body .cm-content { padding: 0 !important; max-width: none; flex: 1 1 auto; }
+.cm-include-body .cm-editor { height: auto; }

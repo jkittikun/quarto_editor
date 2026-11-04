@@ -1,0 +1,4 @@
+::: {.callout-tip}
+## Shared snippet
+This callout lives in `_shared.qmd` and is pulled in with `{{< include >}}`. See @fig-growth.
+:::

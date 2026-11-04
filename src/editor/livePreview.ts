@@ -11,12 +11,14 @@ import { splitFrontMatter } from "../core/project";
 import { parseBracketCitation } from "../core/cite";
 import { scanTargets, XREF_TYPES, type HeadingNumber } from "../core/xref";
 import { escapeHtml, renderBlocks } from "../core/inline";
+import { isConditional, visibleIn, conditionLabel } from "../core/conditional";
 import { ctx, refreshEffect, setTabEffect, toggleCalloutEffect, activateEffect } from "./context";
 import { outputsField, parseInfo, cellOptions, hashCode } from "./cells";
 import {
   MathWidget, ImageWidget, RefWidget, FrontMatterWidget, CalloutHeaderWidget, LabelWidget, TabBarWidget,
   CellHeaderWidget, CellOutputWidget, DiagramWidget, TableWidget, BulletWidget, CheckboxWidget, HrWidget,
-  RefsWidget, WrapWidget, ColumnsWidget, HiddenBlockWidget, refText, citeText, md, inlineCtx, renderMath,
+  RefsWidget, WrapWidget, ColumnsWidget, HiddenBlockWidget, HiddenCellWidget, StackWidget,
+  FootnoteWidget, FootnotesListWidget, MarginWidget, ChipWidget, IndexMarkWidget, IncludeWidget, refText, citeText, md, inlineCtx, renderMath,
 } from "./widgets";
 
 const hidden = Decoration.replace({});
@@ -104,6 +106,21 @@ interface Div {
   depth: number;
 }
 
+/** End (exclusive of "]") of an inline footnote starting at `from` ("^["). */
+function findInlineEnd(doc: Text, from: number): number {
+  const s = doc.sliceString(from, Math.min(doc.length, from + 2000));
+  let depth = 0;
+  for (let i = 1; i < s.length; i++) {
+    if (s[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (s[i] === "[") depth++;
+    else if (s[i] === "]" && --depth === 0) return from + i;
+  }
+  return from + 2;
+}
+
 function resolveImage(url: string): string {
   if (/^(https?:|data:|blob:)/.test(url)) return url;
   return ctx.fileUrl(ctx.resolvePath(decodeURI(url)));
@@ -116,7 +133,7 @@ export function buildDecorations(state: EditorState): DecorationSet {
   const blocks: { from: number; to: number }[] = [];
   const blockRanges = new Set<Range<Decoration>>();
   // Reveal source only around the cursor while the editor has focus.
-  const sel = state.field(focusField, false) === 2 ? state.selection.ranges : [];
+  const sel = !ctx.reader && state.field(focusField, false) === 2 ? state.selection.ranges : [];
 
   const touches = (from: number, to: number) => sel.some((r) => r.from <= to && r.to >= from);
   const linesTouch = (from: number, to: number) => touches(doc.lineAt(from).from, doc.lineAt(to).to);
@@ -134,6 +151,11 @@ export function buildDecorations(state: EditorState): DecorationSet {
       .concat(divLineClass.get(lineNo)?.includes("cm-div-") ? ["cm-div-inner"] : [])
       .join(" ");
   const addBlock = (from: number, to: number, widget: WidgetType | null) => {
+    // reader view: a hidden block also takes the blank line after it, so no gap is left behind
+    if (!widget && ctx.reader) {
+      const next = doc.lineAt(to).number + 1;
+      if (next <= doc.lines && !doc.line(next).text.trim() && !inBlock(doc.line(next).from, doc.line(next).to)) to = doc.line(next).to;
+    }
     if (inBlock(from, to)) return;
     blocks.push({ from, to });
     const cls = containerClass(doc.lineAt(from).number);
@@ -149,9 +171,15 @@ export function buildDecorations(state: EditorState): DecorationSet {
   // ---- Pass 1: fenced divs (callouts, tabsets, theorems, #refs) --------------------------
   const fences: SyntaxNode[] = [];
   const codeBlocks: { from: number; to: number }[] = [];
+  const fnOrder: string[] = []; // footnote ids in order of first reference ("^n" for inline notes)
   tree.iterate({
     enter(n) {
       if (n.name === "DivFence") fences.push(n.node);
+      if (n.name === "FootnoteRef") {
+        const id = doc.sliceString(n.from + 2, n.to - 1);
+        if (!fnOrder.includes(id)) fnOrder.push(id);
+      }
+      if (n.name === "InlineFootnote") fnOrder.push(`^${n.from}`);
       if (n.name === "FencedCode") {
         codeBlocks.push({ from: n.from, to: n.to });
         return false;
@@ -177,6 +205,24 @@ export function buildDecorations(state: EditorState): DecorationSet {
       }
     }
   }
+
+  // ---- footnote definitions: "[^id]: text" plus indented continuation lines -------------------
+  const fnDefs = new Map<string, { text: string; from: number; to: number; markTo: number }>();
+  for (let ln = 1; ln <= doc.lines; ln++) {
+    const l = doc.line(ln);
+    const m = /^\[\^([^\]\s]+)\]:\s?/.exec(l.text);
+    if (!m || codeBlocks.some((c) => l.from > c.from && l.from < c.to)) continue;
+    const parts = [l.text.slice(m[0].length)];
+    let end = l;
+    while (end.number < doc.lines) {
+      const nx = doc.line(end.number + 1);
+      if (!/^( {4}|\t)\S/.test(nx.text)) break;
+      parts.push(nx.text.trim());
+      end = nx;
+    }
+    fnDefs.set(m[1], { text: parts.join(" "), from: l.from, to: end.to, markTo: l.from + m[0].length });
+  }
+  const fnNum = (id: string) => fnOrder.indexOf(id) + 1;
 
   let tabsetN = 0;
   let calloutN = 0;
@@ -221,6 +267,30 @@ export function buildDecorations(state: EditorState): DecorationSet {
     addLine(openLine.number, `${kind} cm-div-open cm-depth-${d.depth}`);
     for (let ln = innerFirst; ln <= innerLast; ln++) addLine(ln, `${kind} cm-div-inner cm-depth-${d.depth}`);
     if (d.closeFrom !== null) addLine(closeLine.number, `${kind} cm-div-close cm-depth-${d.depth}`);
+
+    // Margin notes: rendered in the right margin until the cursor enters them.
+    if ((cls.includes("column-margin") || cls.includes("aside")) && d.closeFrom !== null && !linesTouch(openLine.from, closeLine.to)) {
+      const text = innerFirst <= innerLast ? doc.sliceString(doc.line(innerFirst).from, doc.line(innerLast).to) : "";
+      addBlock(openLine.from, closeLine.to, new MarginWidget(renderBlocks(text, { ...inlineCtx, math: renderMath, image: (src) => resolveImage(src) }), openLine.from));
+      continue;
+    }
+    // Conditional content: in reader view show what the HTML book would show.
+    if (isConditional(d.attrs)) {
+      if (ctx.reader) {
+        if (!visibleIn(d.attrs, "html")) {
+          addBlock(openLine.from, closeLine.to, null);
+          continue;
+        }
+        addBlock(openLine.from, openLine.to, null);
+        if (d.closeFrom !== null) addBlock(closeLine.from, closeLine.to, null);
+        continue;
+      }
+      if (!openTouched) {
+        ranges.push(Decoration.replace({ widget: new LabelWidget(escapeHtml(conditionLabel(d.attrs)), "cm-div-label cm-cond-label") }).range(openLine.from, openLine.to));
+      }
+      if (d.closeFrom !== null && !closeTouched) hide(closeLine.from, closeLine.to);
+      continue;
+    }
 
     const firstInner = innerFirst <= innerLast ? doc.line(innerFirst) : null;
     const firstIsHeading = !!firstInner && /^#{1,6}\s/.test(firstInner.text);
@@ -446,30 +516,72 @@ export function buildDecorations(state: EditorState): DecorationSet {
           const codeFrom = Math.min(first.to + 1, doc.length);
           const codeTo = closed ? Math.max(codeFrom, last.from - 1) : n.to;
           const code = doc.sliceString(codeFrom, codeTo);
+          const raw = /^\s*\{=([\w-]+)\}\s*$/.exec(infoText);
+          if (raw && closed) {
+            const fmt = raw[1].toLowerCase();
+            const hideIt = ctx.reader && fmt !== "html";
+            if (hideIt) {
+              addBlock(first.from, last.to, null);
+              return false;
+            }
+            if (!linesTouch(n.from, n.to)) {
+              const nLines = last.number - first.number - 1;
+              const label = `${fmt === "latex" || fmt === "tex" ? "LaTeX" : fmt.toUpperCase()} · ${nLines} line${nLines === 1 ? "" : "s"} · ${fmt === "latex" || fmt === "tex" ? "PDF only" : `${fmt} output only`}`;
+              addBlock(first.from, last.to, new ChipWidget(label, code.slice(0, 400), codeFrom, true));
+              return false;
+            }
+          }
           if (executable && (lang === "mermaid" || lang === "dot") && !linesTouch(n.from, n.to) && closed) {
             addBlock(first.from, last.to, new DiagramWidget(code, n.from, lang));
             return false;
           }
           const opts = executable ? cellOptions(code) : {};
-          const out = executable ? outputs?.get(n.from) : undefined;
-          addLine(first.number, "cm-code cm-code-open");
-          for (let ln = first.number + 1; ln < last.number; ln++) {
-            const l = doc.line(ln);
-            addLine(ln, /^\s*(#|%%|\/\/)\|/.test(l.text) ? "cm-code cm-cell-opt" : "cm-code");
-          }
-          if (closed) addLine(last.number, "cm-code cm-code-close");
-          if (!touches(first.from, first.to)) {
-            ranges.push(Decoration.replace({ widget: new CellHeaderWidget(lang, opts.label ?? null, executable, !!out?.running, n.from) }).range(first.from, first.to));
-          }
-          if (closed && !touches(last.from, last.to)) hide(last.from, last.to);
-          if (out && closed) {
+          const off = (k: string) => executable && opts[k] === "false";
+          const out = executable && !off("output") ? outputs?.get(n.from) : undefined;
+          const touched = linesTouch(n.from, n.to);
+          const outputWidget = () => {
+            if (!out) return null;
             const label = opts.label;
             const t = label ? ctx.index.targets.get(label) : null;
             const capKey = label ? `${label.split("-")[0]}-cap` : "";
             const cap = t && opts[capKey] ? `${t.display}: ${opts[capKey]}` : opts[capKey] ?? null;
-            const w = new CellOutputWidget(out, hashCode(code) !== out.hash, cap);
+            return new CellOutputWidget(out, hashCode(code) !== out.hash, cap);
+          };
+          // Cell options, as in the rendered book: include: false hides everything,
+          // echo: false hides the code but keeps the output.
+          if (closed && !touched && off("include")) {
+            addBlock(first.from, last.to, ctx.reader ? null : new HiddenCellWidget(`hidden cell · include: false · ${lang}`, codeFrom));
+            return false;
+          }
+          if (closed && !touched && off("echo")) {
+            const parts: WidgetType[] = [];
+            if (!ctx.reader) parts.push(new HiddenCellWidget(`code hidden · echo: false · ${lang}`, codeFrom));
+            const ow = outputWidget();
+            if (ow) parts.push(ow);
+            addBlock(first.from, last.to, parts.length ? new StackWidget(parts) : null);
+            return false;
+          }
+          addLine(first.number, "cm-code cm-code-open");
+          let optEnd = first.number; // last `#|` option line
+          for (let ln = first.number + 1; ln < last.number; ln++) {
+            const l = doc.line(ln);
+            const isOpt = /^\s*(#|%%|\/\/)\|/.test(l.text);
+            if (isOpt && optEnd === ln - 1) optEnd = ln;
+            addLine(ln, isOpt ? "cm-code cm-cell-opt" : "cm-code");
+          }
+          if (closed) addLine(last.number, "cm-code cm-code-close");
+          if (!touches(first.from, first.to)) {
+            ranges.push(Decoration.replace({ widget: new CellHeaderWidget(lang, opts.label ?? null, executable, !!out?.running, n.from, off("eval")) }).range(first.from, first.to));
+          }
+          // reader view: option lines are not part of the rendered book
+          if (ctx.reader && executable && optEnd > first.number && optEnd < last.number) {
+            addBlock(doc.line(first.number + 1).from, doc.line(optEnd).to, null);
+          }
+          if (closed && !touches(last.from, last.to)) hide(last.from, last.to);
+          const ow = closed ? outputWidget() : null;
+          if (ow) {
             const cls = containerClass(last.number);
-            ranges.push(Decoration.widget({ widget: cls ? new WrapWidget(w, cls) : w, block: true, side: 1 }).range(last.to));
+            ranges.push(Decoration.widget({ widget: cls ? new WrapWidget(ow, cls) : ow, block: true, side: 1 }).range(last.to));
           }
           return false;
         }
@@ -533,7 +645,8 @@ export function buildDecorations(state: EditorState): DecorationSet {
           const r = refText(key, { narrative: true, suppressAuthor: false });
           if (!touches(n.from, n.to)) {
             const title = r.target ? (r.target.caption ? `${r.target.display}: ${r.target.caption}` : r.target.display) + "\n⌘-click to open" : ctx.bib.get(key)?.title ?? (r.ok ? "" : `Unresolved reference @${key}`);
-            ranges.push(Decoration.replace({ widget: new RefWidget(r.text, r.ok, r.kind, key, title) }).range(n.from, n.to));
+            void title; // shown by the hover card instead of a native tooltip
+            ranges.push(Decoration.replace({ widget: new RefWidget(r.text, r.ok, r.kind, key, "") }).range(n.from, n.to));
           } else ranges.push(markDeco(r.ok ? "cm-ref-src" : "cm-ref-src cm-ref-missing").range(n.from, n.to));
           return false;
         }
@@ -542,22 +655,95 @@ export function buildDecorations(state: EditorState): DecorationSet {
           const items = parseBracketCitation(inner);
           if (items && !touches(n.from, n.to)) {
             const r = citeText(items);
-            const title = items.map((i) => ctx.bib.get(i.key)?.title ?? ctx.index.targets.get(i.key)?.caption ?? i.key).join("\n");
-            ranges.push(Decoration.replace({ widget: new RefWidget(r.text, r.ok, "cite", items[0].key, title) }).range(n.from, n.to));
+            ranges.push(Decoration.replace({ widget: new RefWidget(r.text, r.ok, "cite", items.map((i) => i.key).join(";"), "") }).range(n.from, n.to));
+          } else ranges.push(markDeco("cm-ref-src").range(n.from, n.to));
+          return false;
+        }
+        case "LatexCommand": {
+          const text = doc.sliceString(n.from, n.to);
+          if (touches(n.from, n.to)) {
+            ranges.push(markDeco("cm-latex-src").range(n.from, n.to));
+            return false;
+          }
+          const idx = /^\\index\{([\s\S]*)\}$/.exec(text);
+          if (ctx.reader) hide(n.from, n.to);
+          else if (idx) ranges.push(Decoration.replace({ widget: new IndexMarkWidget(idx[1]) }).range(n.from, n.to));
+          else ranges.push(Decoration.replace({ widget: new ChipWidget(`⎘ ${text.slice(1).replace(/\{.*$/, "")}`, `${text} (PDF only)`, n.from) }).range(n.from, n.to));
+          return false;
+        }
+        case "FootnoteRef": {
+          const id = doc.sliceString(n.from + 2, n.to - 1);
+          if (!touches(n.from, n.to)) {
+            const def = fnDefs.get(id);
+            ranges.push(Decoration.replace({ widget: new FootnoteWidget(fnNum(id), def ? md(def.text) : "", id) }).range(n.from, n.to));
+          } else ranges.push(markDeco("cm-ref-src").range(n.from, n.to));
+          return false;
+        }
+        case "InlineFootnote": {
+          if (!touches(n.from, n.to)) {
+            const text = doc.sliceString(n.from + 2, n.to - 1);
+            ranges.push(Decoration.replace({ widget: new FootnoteWidget(fnNum(`^${n.from}`), md(text), `^${n.from}`) }).range(n.from, n.to));
           } else ranges.push(markDeco("cm-ref-src").range(n.from, n.to));
           return false;
         }
         case "Shortcode": {
+          const text = doc.sliceString(n.from, n.to);
+          const inc = /^\{\{<\s*include\s+["']?([^"'\s>]+)["']?\s*>\}\}$/.exec(text);
+          const line = doc.lineAt(n.from);
+          if (inc && line.text.trim() === text && !touches(line.from, line.to)) {
+            const abs = ctx.resolvePath(inc[1]);
+            addBlock(line.from, line.to, new IncludeWidget(abs, inc[1], ctx.sourceOf(abs), n.from));
+            return false;
+          }
           ranges.push(markDeco("cm-shortcode").range(n.from, n.to));
           return false;
         }
         case "Attributes": {
+          // inline raw content: `\newpage`{=latex}
+          const attrText = doc.sliceString(n.from, n.to);
+          const rawFmt = /^\{=([\w-]+)\}$/.exec(attrText);
+          const prev = node.prevSibling;
+          if (rawFmt && prev?.name === "InlineCode" && prev.to === n.from) {
+            if (!touches(prev.from, n.to)) {
+              if (ctx.reader && rawFmt[1] !== "html") hide(prev.from, n.to);
+              else ranges.push(Decoration.replace({ widget: new ChipWidget(`${rawFmt[1] === "latex" ? "LaTeX" : rawFmt[1]} · raw`, doc.sliceString(prev.from, prev.to), prev.from) }).range(prev.from, n.to));
+            }
+            return false;
+          }
           ranges.push(markDeco("cm-attrs").range(n.from, n.to));
           return false;
         }
       }
     },
   });
+
+  const fnNotes = () =>
+    fnOrder.map((id, i) => ({
+      num: i + 1,
+      html: id.startsWith("^")
+        ? md(doc.sliceString(+id.slice(1) + 2, Math.max(+id.slice(1) + 2, findInlineEnd(doc, +id.slice(1)))))
+        : md(fnDefs.get(id)?.text ?? ""),
+    }));
+  let listPlaced = !ctx.reader || !fnOrder.length;
+  for (const [id, def] of fnDefs) {
+    if (ctx.reader) {
+      // the list of notes replaces the definitions when they sit at the end of the document
+      const atEnd = !doc.sliceString(def.to).trim();
+      if (atEnd && !listPlaced) {
+        addBlock(def.from, doc.length, new FootnotesListWidget(fnNotes()));
+        listPlaced = true;
+      } else addBlock(def.from, def.to, null);
+      continue;
+    }
+    for (let ln = doc.lineAt(def.from).number; ln <= doc.lineAt(def.to).number; ln++) addLine(ln, "cm-fn-def");
+    if (!touches(def.from, def.to)) {
+      const num = fnNum(id);
+      ranges.push(Decoration.replace({ widget: new LabelWidget(num ? `<sup>${num}</sup>` : `<sup>?</sup>`, "cm-fn-def-num") }).range(def.from, def.markTo));
+    }
+  }
+  if (!listPlaced) {
+    ranges.push(Decoration.widget({ widget: new FootnotesListWidget(fnNotes()), block: true, side: 1 }).range(doc.length));
+  }
 
   for (const [lineNo, cls] of divLineClass) {
     const line = doc.line(lineNo);
@@ -609,7 +795,7 @@ export const livePreviewHandlers = EditorView.domEventHandlers({
       return true;
     }
     const ref = target.closest<HTMLElement>(".cm-ref");
-    const key = ref?.dataset.ref;
+    const key = ref?.dataset.ref?.split(";")[0];
     if (key) {
       const t = ctx.index.targets.get(key);
       if (t) {

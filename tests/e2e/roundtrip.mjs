@@ -28,7 +28,7 @@ const SHOTS = process.env.E2E_SHOTS;
 const work = mkdtempSync(join(tmpdir(), "folio-e2e-"));
 const book = join(work, "book");
 const empty = join(work, "empty");
-cpSync(join(ROOT, "examples/book"), book, { recursive: true, filter: (s) => !s.includes(".folio") && !s.includes("_book") });
+cpSync(join(ROOT, "examples/book"), book, { recursive: true, filter: (s) => !s.includes(".folio") && !s.includes("_book") && !s.includes("_freeze") });
 mkdirSync(empty);
 
 let failures = 0;
@@ -93,7 +93,7 @@ try {
   await typeAtEndOf("renders instantly", " ALPHA");
   await typeAtEndOf("This book shows what", " BETA");
   // tabset: switch to the R tab and type there
-  await page.locator(".cm-content").click({ position: { x: 5, y: 5 } });
+  await page.locator(".cm-content").first().click({ position: { x: 5, y: 5 } });
   await page.evaluate(() => folio.view.contentDOM.blur());
   await page.locator(".cm-tab", { hasText: "R" }).dispatchEvent("mousedown");
   await sleep(200);
@@ -101,15 +101,15 @@ try {
   // collapsible callout: starts collapsed; expand it and type in the body
   await page.evaluate(() => folio.view.contentDOM.blur());
   await sleep(150);
-  ok(!(await page.locator(".cm-content").innerText()).includes("Callouts can be collapsible."), "collapse=true callout starts collapsed");
+  ok(!(await page.locator(".cm-content").first().innerText()).includes("Callouts can be collapsible."), "collapse=true callout starts collapsed");
   await page.locator(".cm-callout-toggle").first().dispatchEvent("mousedown");
   await sleep(200);
-  ok((await page.locator(".cm-content").innerText()).includes("Callouts can be collapsible."), "callout expands on toggle");
+  ok((await page.locator(".cm-content").first().innerText()).includes("Callouts can be collapsible."), "callout expands on toggle");
   await typeAtEndOf("Callouts can be collapsible.", " DELTA");
   // raw source view on and off
   await page.click("#toggle-source");
   await sleep(150);
-  ok((await page.locator(".cm-content").innerText()).includes("::: {.callout-note}"), "raw view shows the source");
+  ok((await page.locator(".cm-content").first().innerText()).includes("::: {.callout-note}"), "raw view shows the source");
   await shot("raw-view");
   await page.click("#toggle-source");
   // font size
@@ -134,7 +134,7 @@ try {
 
   // ---------------------------------------------------------------- 1b. external edits
   writeFileSync(introPath, readFileSync(introPath, "utf8") + "\nAn EXTERNAL edit.\n");
-  ok(await waitFor(() => page.locator(".cm-content").innerText().then((t) => t.includes("An EXTERNAL edit."))), "edits made outside Folio appear in the open chapter");
+  ok(await waitFor(() => page.locator(".cm-content").first().innerText().then((t) => t.includes("An EXTERNAL edit."))), "edits made outside Folio appear in the open chapter");
   mkdirSync(join(book, "parts/deep"), { recursive: true });
   await sleep(300);
   writeFileSync(join(book, "parts/deep/new.qmd"), "# Deep\n");
@@ -183,7 +183,7 @@ try {
   await page.evaluate(() => folio.openFile(folio.abs("intro.qmd")));
   await sleep(300);
   const pane = await page.locator("#editor").boundingBox();
-  const content = await page.locator(".cm-content").boundingBox();
+  const content = await page.locator(".cm-content").first().boundingBox();
   const off = Math.abs(content.x + content.width / 2 - (pane.x + pane.width / 2));
   ok(off < 3, `content column is centered in the editor pane (off by ${off.toFixed(1)} px)`);
   const inFooter = await page.evaluate(() =>
@@ -232,6 +232,49 @@ try {
   await waitFor(() => readFileSync(join(book, "_quarto.yml"), "utf8") !== ymlBeforeDelete);
   ok(readFileSync(join(book, "_quarto.yml"), "utf8") === ymlBeforeDelete.replace("        - fresh.qmd\n", ""), "_quarto.yml lost exactly that one line");
   ok(await waitFor(() => page.locator("#outline a.chapter", { hasText: "Fresh Chapter" }).count().then((n) => n === 0)), "sidebar no longer lists the deleted chapter");
+
+  // ---------------------------------------------------------------- 4e. cell options, \index, footnotes, includes, margin, reader
+  await page.setViewportSize({ width: 1800, height: 1000 });
+  await page.evaluate(() => folio.openFile(folio.abs("methods.qmd")));
+  await sleep(400);
+  const methodsText = await page.locator(".cm-content").first().innerText();
+  ok(methodsText.includes("hidden cell · include: false") && !methodsText.includes("import numpy as np\nimport matplotlib.pyplot as plt\n```"), "include: false cell is collapsed");
+  ok(methodsText.includes("code hidden · echo: false"), "echo: false hides the code");
+  await page.evaluate(() => folio.openFile(folio.abs("summary.qmd")));
+  ok(await waitFor(() => page.locator(".cm-include").count().then((n) => n === 1)), "{{< include >}} content is shown inline");
+  const sumText = await page.locator(".cm-content").first().innerText();
+  ok(!sumText.includes("\\index{"), "\\index{} is hidden");
+  ok((await page.locator(".cm-fn").count()) === 2, "footnotes render as numbered markers");
+  await page.locator(".cm-fn").first().hover();
+  ok(await waitFor(() => page.locator(".hover-card").innerText().then((t) => t.includes("SHM combines")), 3000), "hovering a footnote shows its text");
+  await page.mouse.move(5, 500);
+  const note = await page.locator(".cm-margin-note").boundingBox();
+  const col = await page.locator(".cm-content").first().boundingBox();
+  ok(note && note.x > col.x + col.width - 40, "margin note sits in the right margin on wide screens");
+  await page.evaluate(() => folio.openFile(folio.abs("intro.qmd")));
+  await sleep(300);
+  await page.locator(".cm-ref", { hasText: "Figure 1.1" }).first().hover();
+  ok(await waitFor(() => page.locator(".hover-card img").count().then((n) => n === 1), 3000), "hovering @fig-… previews the figure");
+  await page.mouse.move(5, 500);
+  // reader view
+  await page.evaluate(() => folio.openFile(folio.abs("summary.qmd")));
+  await page.click("#toggle-reader");
+  await sleep(300);
+  const readerText = await page.locator(".cm-content").first().innerText();
+  ok(!readerText.includes("only appears in the PDF") && !readerText.includes("LaTeX ·"), "reader view hides PDF-only content");
+  ok(readerText.includes("Footnotes"), "reader view lists footnotes at the end");
+  const lenBefore = readFileSync(join(book, "summary.qmd"), "utf8");
+  await page.locator(".cm-content").first().click({ position: { x: 60, y: 120 } });
+  await page.keyboard.type("SHOULD NOT APPEAR");
+  await sleep(900);
+  ok(readFileSync(join(book, "summary.qmd"), "utf8") === lenBefore, "reader view is read-only");
+  await page.evaluate(() => folio.openFile(folio.abs("methods.qmd")));
+  await sleep(300);
+  const readerMethods = await page.locator(".cm-content").first().innerText();
+  ok(!readerMethods.includes("hidden cell") && !readerMethods.includes("#| label"), "reader view renders cells like the book");
+  await shot("reader");
+  await page.click("#toggle-reader");
+  await page.setViewportSize({ width: 1300, height: 900 });
 
   // ---------------------------------------------------------------- 5. quarto render
   if (hasQuarto) {

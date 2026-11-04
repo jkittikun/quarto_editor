@@ -4,11 +4,11 @@ import { type Backend, type KernelMsg, type PythonEnv, joinPath, dirname, relati
 import { parseQuartoYml, bookOrder, insertChapter, removeChapter, isInBook, type ProjectInfo } from "../core/project";
 import { projectTemplate, newDocument, type TemplateKind } from "../core/templates";
 import { defaultPython } from "../core/python";
-import { parseFreeze, freezePath } from "../core/freeze";
+import { parseFreeze, freezePath, matchFrozen } from "../core/freeze";
 import { buildIndex, scanTargets, type XrefTarget, type HeadingNumber } from "../core/xref";
 import { parseBibtex } from "../core/bibtex";
 import { escapeHtml } from "../core/inline";
-import { editorExtensions, fileKind, previewCompartment, previewExtensions } from "../editor/setup";
+import { editorExtensions, fileKind, previewCompartment, previewExtensions, readerCompartment, readerExtensions } from "../editor/setup";
 import { ctx, refreshEffect } from "../editor/context";
 import {
   outputsField, setCellEffect, kernelMsgEffect, loadOutputsEffect, listCells, hashCode,
@@ -39,6 +39,9 @@ export class App {
   current: OpenDoc | null = null;
   view: EditorView;
   reqToDoc = new Map<string, string>();
+  /** Files loaded only for {{< include >}} / previews (absolute path → text). */
+  aux = new Map<string, string>();
+  private auxLoading = new Set<string>();
   kernelState = "idle";
   private quickOpen: QuickOpen;
 
@@ -139,7 +142,7 @@ export class App {
   reindex() {
     const book = this.info?.type === "book";
     const order = this.info && book ? bookOrder(this.info) : [...this.docsText.keys()].map((f) => ({ file: f, appendix: false, isPart: false }));
-    const docs = order.filter((c) => this.docsText.has(c.file)).map((c) => ({ ...c, src: this.docsText.get(c.file)! }));
+    const docs = order.filter((c) => this.docsText.has(c.file)).map((c) => ({ ...c, src: this.expandIncludes(this.docsText.get(c.file)!, c.file) }));
     // Open documents that are not part of the book still get their own labels indexed
     for (const [f, src] of this.docsText) if (!docs.some((d) => d.file === f)) docs.push({ file: f, src, appendix: false, isPart: false });
     ctx.index = buildIndex(docs, book);
@@ -173,6 +176,7 @@ export class App {
     localStorage.setItem(`folio.lastFile:${this.root}`, this.rel(path));
     this.view.setState(doc.state);
     this.applyPreviewMode();
+    this.applyReaderMode();
     document.body.classList.toggle("source-file", fileKind(path) !== "markdown");
     this.reindex();
     this.view.dispatch({ effects: refreshEffect.of(null) });
@@ -187,6 +191,7 @@ export class App {
       extensions: editorExtensions({
         kind: fileKind(path),
         preview: this.previewOn(),
+        reader: ctx.reader,
         onChange: () => this.onDocChange(),
         onSave: () => this.current && this.flushSave(this.current),
         extraKeys: [
@@ -196,6 +201,53 @@ export class App {
         ],
       }),
     });
+  }
+
+  /** Load a file needed for an include or preview, then refresh the decorations. */
+  loadAux(abs: string) {
+    if (this.auxLoading.has(abs) || !abs.startsWith(this.root + "/")) return;
+    this.auxLoading.add(abs);
+    this.backend
+      .readFile(abs)
+      .then((text) => {
+        this.aux.set(abs, text);
+        this.reindex();
+        this.view.dispatch({ effects: refreshEffect.of(null) });
+      })
+      .catch(() => this.aux.set(abs, `*Could not read ${this.rel(abs)}*`))
+      .finally(() => this.auxLoading.delete(abs));
+  }
+
+  /** Inline {{< include >}} content (when loaded) so labels inside included files are indexed. */
+  expandIncludes(src: string, relFile: string, depth = 0): string {
+    if (depth > 3 || !src.includes("{{<")) return src;
+    return src.replace(/^[ \t]*\{\{<\s*include\s+["']?([^"'\s>]+)["']?\s*>\}\}[ \t]*$/gm, (line, p: string) => {
+      const abs = p.startsWith("/") ? joinPath(this.root, p) : joinPath(dirname(this.abs(relFile)), p);
+      const text = this.docsText.get(this.rel(abs)) ?? this.aux.get(abs);
+      if (text === undefined) {
+        this.loadAux(abs);
+        return line;
+      }
+      return this.expandIncludes(text, this.rel(abs), depth + 1);
+    });
+  }
+
+  // ---- reader view --------------------------------------------------------
+
+  toggleReader() {
+    ctx.reader = !ctx.reader;
+    localStorage.setItem("folio.reader", ctx.reader ? "on" : "off");
+    this.applyReaderMode();
+  }
+
+  applyReaderMode() {
+    document.body.classList.toggle("reader-mode", ctx.reader);
+    $("#toggle-reader").classList.toggle("active", ctx.reader);
+    $("#toggle-reader").title = ctx.reader ? "Back to editing (⌘⌥R)" : "Reader view (⌘⌥R)";
+    if (readerCompartment.get(this.view.state) !== undefined) {
+      this.view.dispatch({ effects: [readerCompartment.reconfigure(readerExtensions(ctx.reader)), refreshEffect.of(null)] });
+    }
+    if (ctx.reader) this.view.contentDOM.blur();
   }
 
   // ---- view options -------------------------------------------------------
@@ -565,6 +617,10 @@ export class App {
       const exists = await this.backend.exists(p).catch(() => false);
       if (exists !== this.files.includes(rel)) reloadList = true;
       if (!exists || !TEXT_EXT.test(rel)) continue;
+      if (this.aux.has(p)) {
+        this.aux.set(p, await this.backend.readFile(p));
+        continue;
+      }
       const doc = this.docs.get(p);
       if (doc) {
         const text = await this.backend.readFile(p);
@@ -672,12 +728,15 @@ export class App {
         const fz = freezePath(this.rel(doc.path));
         if (!(await this.backend.exists(this.abs(fz.json)))) return;
         const frozen = parseFreeze(await this.backend.readFile(this.abs(fz.json)), this.abs(fz.dir));
-        const executable = listCells(doc.state).filter((c) => c.executable);
         const all = listCells(doc.state);
-        // freeze cells are listed in executable-cell order; map to document cell indices
+        const docCells = all.map((c, index) => ({ index, code: c.code, options: c.options, exec: c.executable })).filter((c) => c.exec);
+        const match = matchFrozen(docCells, frozen);
         cached = frozen
-          .filter((f) => f.outputs.length && executable[f.index])
-          .map((f) => ({ index: all.indexOf(executable[f.index]), hash: hashCode(executable[f.index].code), outputs: f.outputs }));
+          .filter((f) => f.outputs.length && match.has(f.index))
+          .map((f) => {
+            const i = match.get(f.index)!;
+            return { index: i, hash: hashCode(all[i].code), outputs: f.outputs };
+          });
         fromFreeze = true;
       }
       const apply = (st: EditorState) => {
@@ -754,6 +813,15 @@ export class App {
     ctx.resolvePath = (rel) => (rel.startsWith("/") ? joinPath(this.root, rel) : joinPath(dirname(ctx.file), rel));
     ctx.runCell = (view, pos) => this.runCell(view, pos);
     ctx.runAbove = () => this.runAll(true);
+    ctx.openFile = (abs) => this.openFile(abs);
+    ctx.toggleReader = () => this.toggleReader();
+    ctx.sourceOf = (abs) => {
+      const rel = this.rel(abs);
+      if (this.docsText.has(rel)) return this.docsText.get(rel)!;
+      if (this.aux.has(abs)) return this.aux.get(abs)!;
+      this.loadAux(abs);
+      return null;
+    };
     ctx.openRef = (t: XrefTarget) => this.openFile(this.abs(t.file), { line: t.line });
     ctx.openLink = (url) => {
       if (/^[a-z]+:/i.test(url)) this.backend.openExternal(url);
@@ -783,6 +851,8 @@ export class App {
     $("#render-book").onclick = () => this.render(true);
     $("#run-all").onclick = () => this.runAll();
     $("#export-pdf").onclick = () => this.exportPdf();
+    $("#toggle-reader").onclick = () => this.toggleReader();
+    ctx.reader = localStorage.getItem("folio.reader") === "on";
     $("#python-env").onclick = () => this.pickPython();
     this.wireResizer();
     $("#run-above").onclick = () => this.runAll(true);
@@ -853,6 +923,7 @@ export class App {
     const words = text
       .replace(/```[\s\S]*?```/g, "")
       .replace(/^---[\s\S]*?---/, "")
+      .replace(/\\index\{[^{}]*(\{[^{}]*\}[^{}]*)*\}/g, "")
       .split(/\s+/)
       .filter((w) => /\w/.test(w)).length;
     $("#word-count").textContent = `${words.toLocaleString()} words`;
