@@ -4,7 +4,7 @@ import { renderInline, escapeHtml, type InlineContext } from "../core/inline";
 import { formatCitation, formatReference } from "../core/bibtex";
 import { isXrefLabel, type XrefTarget } from "../core/xref";
 import type { CiteItem } from "../core/cite";
-import { ctx, setTabEffect, type CellOutputs } from "./context";
+import { ctx, setTabEffect, toggleCalloutEffect, activateEffect, type CellOutputs } from "./context";
 import type { KernelOutput } from "../backend/types";
 
 // ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ function revealOnClick(dom: HTMLElement, view: EditorView, pos: () => number) {
   dom.addEventListener("mousedown", (e) => {
     if ((e.target as HTMLElement).closest("a, button, input, .cm-no-reveal")) return;
     e.preventDefault();
-    view.dispatch({ selection: { anchor: pos() } });
+    view.dispatch({ selection: { anchor: pos() }, effects: activateEffect.of(null) });
     view.focus();
   });
 }
@@ -193,18 +193,36 @@ const CALLOUT_LABEL: Record<string, string> = { note: "Note", tip: "Tip", warnin
 const CALLOUT_ICON: Record<string, string> = { note: "ℹ", tip: "💡", warning: "⚠", important: "❗", caution: "🔥" };
 
 export class CalloutHeaderWidget extends WidgetType {
-  constructor(readonly type: string, readonly title: string | null, readonly collapse: boolean) {
+  constructor(
+    readonly type: string,
+    readonly title: string | null,
+    readonly collapsible: boolean,
+    readonly collapsed: boolean,
+    readonly index: number,
+  ) {
     super();
   }
   eq(o: CalloutHeaderWidget) {
-    return o.type === this.type && o.title === this.title && o.collapse === this.collapse;
+    return o.type === this.type && o.title === this.title && o.collapsible === this.collapsible && o.collapsed === this.collapsed && o.index === this.index;
   }
-  toDOM() {
+  toDOM(view: EditorView) {
     const d = el("span", `cm-callout-head`);
+    if (this.collapsible) {
+      const b = el("button", "cm-callout-toggle cm-no-reveal", this.collapsed ? "▸" : "▾");
+      b.title = this.collapsed ? "Expand" : "Collapse";
+      b.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        view.dispatch({ effects: toggleCalloutEffect.of({ callout: this.index, collapsed: !this.collapsed }) });
+      });
+      d.appendChild(b);
+    }
     d.appendChild(el("span", "cm-callout-icon", CALLOUT_ICON[this.type] ?? "ℹ"));
     d.appendChild(el("span", "cm-callout-titletext", this.title ? md(this.title) : CALLOUT_LABEL[this.type] ?? this.type));
-    if (this.collapse) d.appendChild(el("span", "cm-callout-collapse", "collapsible"));
+    if (this.collapsed) d.appendChild(el("span", "cm-callout-collapse", "collapsed"));
     return d;
+  }
+  ignoreEvent(e: Event) {
+    return !!(e.target as HTMLElement).closest?.(".cm-callout-toggle");
   }
 }
 
@@ -293,6 +311,13 @@ function renderOutput(o: KernelOutput): HTMLElement {
     return pre;
   }
   const d = o.data;
+  if (d["image/x-folio-path"]) {
+    const img = el("img", "cm-out-img");
+    img.src = /^(https?:|data:)/.test(d["image/x-folio-path"]) ? d["image/x-folio-path"] : ctx.fileUrl(d["image/x-folio-path"]);
+    img.alt = d["text/plain"] ?? "";
+    img.style.maxWidth = "min(100%, 720px)";
+    return img;
+  }
   if (d["image/png"] || d["image/jpeg"]) {
     const img = el("img", "cm-out-img");
     const mime = d["image/png"] ? "image/png" : "image/jpeg";
@@ -333,6 +358,7 @@ export class CellOutputWidget extends WidgetType {
     for (const o of this.state.outputs) d.appendChild(renderOutput(o));
     if (this.state.error) d.appendChild(el("pre", "cm-out-error", escapeHtml(this.state.error)));
     if (this.caption) d.appendChild(el("div", "cm-out-caption", this.caption));
+    if (this.state.source === "freeze") d.appendChild(el("div", "cm-out-source", "from last quarto render"));
     if (this.stale) d.title = "Code changed since this output was produced";
     return d;
   }
@@ -349,26 +375,41 @@ function isDark() {
     (document.documentElement.dataset.theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
 }
 
+let vizPromise: Promise<import("@viz-js/viz").Viz> | null = null;
+
+async function renderDiagram(engine: string, code: string): Promise<string> {
+  if (engine === "dot") {
+    vizPromise ??= import("@viz-js/viz").then((m) => m.instance());
+    const viz = await vizPromise;
+    const body = code.replace(/^\s*\/\/\|.*$/gm, "");
+    const res = viz.render(body, { format: "svg" });
+    if (res.status !== "success") throw new Error(res.errors.map((e) => e.message).join("\n") || "Graphviz error");
+    return res.output;
+  }
+  mermaidPromise ??= import("mermaid").then((m) => m.default);
+  const mermaid = await mermaidPromise;
+  mermaid.initialize({ startOnLoad: false, theme: isDark() ? "dark" : "default", securityLevel: "strict" });
+  const body = code.replace(/^\s*%%\|.*$/gm, "");
+  const { svg } = await mermaid.render(`folio-mmd-${++diagramSeq}`, body);
+  return svg;
+}
+
 export class DiagramWidget extends WidgetType {
-  constructor(readonly code: string, readonly pos: number) {
+  constructor(readonly code: string, readonly pos: number, readonly engine: string = "mermaid") {
     super();
   }
   eq(o: DiagramWidget) {
-    return o.code === this.code;
+    return o.code === this.code && o.engine === this.engine;
   }
   toDOM(view: EditorView) {
-    const d = el("div", "cm-diagram");
-    const key = (isDark() ? "d" : "l") + this.code;
+    const d = el("div", `cm-diagram cm-diagram-${this.engine}`);
+    const key = (isDark() ? "d" : "l") + this.engine + "\0" + this.code;
     const cached = diagramCache.get(key);
     if (cached) d.innerHTML = cached;
     else {
       d.textContent = "Rendering diagram…";
-      mermaidPromise ??= import("mermaid").then((m) => m.default);
-      mermaidPromise
-        .then(async (mermaid) => {
-          mermaid.initialize({ startOnLoad: false, theme: isDark() ? "dark" : "default", securityLevel: "strict" });
-          const body = this.code.replace(/^\s*%%\|.*$/gm, "");
-          const { svg } = await mermaid.render(`folio-mmd-${++diagramSeq}`, body);
+      renderDiagram(this.engine, this.code)
+        .then((svg) => {
           diagramCache.set(key, svg);
           d.innerHTML = svg;
           view.requestMeasure();
@@ -496,5 +537,45 @@ export class WrapWidget extends WidgetType {
   }
   get estimatedHeight() {
     return this.inner.estimatedHeight;
+  }
+}
+
+export class ColumnsWidget extends WidgetType {
+  constructor(readonly cols: { width: string | null; html: string }[], readonly pos: number) {
+    super();
+  }
+  eq(o: ColumnsWidget) {
+    return o.cols.length === this.cols.length && o.cols.every((c, i) => c.html === this.cols[i].html && c.width === this.cols[i].width);
+  }
+  toDOM(view: EditorView) {
+    const row = el("div", "cm-columns");
+    for (const c of this.cols) {
+      const col = el("div", "cm-column", c.html);
+      if (c.width) col.style.flex = `0 1 ${/^\d+$/.test(c.width) ? c.width + "px" : c.width}`;
+      else col.style.flex = "1 1 0";
+      row.appendChild(col);
+    }
+    revealOnClick(row, view, () => this.pos);
+    return row;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
+/**
+ * Stand-in for hidden lines (collapsed callouts, inactive tabs, callout title lines). A block
+ * replacement without a widget has no DOM, so CodeMirror can't measure it and keeps an estimated
+ * line height in its height map, which makes clicks below it land on the wrong line.
+ */
+export class HiddenBlockWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    return el("div", "cm-hidden-block");
+  }
+  get estimatedHeight() {
+    return 0;
   }
 }

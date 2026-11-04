@@ -10,13 +10,13 @@ import { parseAttrs, type Attrs } from "../core/attrs";
 import { splitFrontMatter } from "../core/project";
 import { parseBracketCitation } from "../core/cite";
 import { scanTargets, XREF_TYPES, type HeadingNumber } from "../core/xref";
-import { escapeHtml } from "../core/inline";
-import { ctx, refreshEffect, setTabEffect } from "./context";
+import { escapeHtml, renderBlocks } from "../core/inline";
+import { ctx, refreshEffect, setTabEffect, toggleCalloutEffect, activateEffect } from "./context";
 import { outputsField, parseInfo, cellOptions, hashCode } from "./cells";
 import {
   MathWidget, ImageWidget, RefWidget, FrontMatterWidget, CalloutHeaderWidget, LabelWidget, TabBarWidget,
   CellHeaderWidget, CellOutputWidget, DiagramWidget, TableWidget, BulletWidget, CheckboxWidget, HrWidget,
-  RefsWidget, WrapWidget, refText, citeText, md,
+  RefsWidget, WrapWidget, ColumnsWidget, HiddenBlockWidget, refText, citeText, md, inlineCtx, renderMath,
 } from "./widgets";
 
 const hidden = Decoration.replace({});
@@ -24,10 +24,19 @@ const lineDeco = (cls: string) => Decoration.line({ class: cls });
 const markDeco = (cls: string, attrs?: Record<string, string>) => Decoration.mark({ class: cls, attributes: attrs });
 
 export const setFocusEffect = StateEffect.define<boolean>();
-export const focusField = StateField.define<boolean>({
-  create: () => false,
+/**
+ * 0 = blurred (everything rendered), 1 = focused but the cursor hasn't been placed yet,
+ * 2 = editing (source revealed around the cursor). The pending state avoids revealing source
+ * around a stale cursor when focus returns, which would shift the layout under the user's click.
+ */
+export const focusField = StateField.define<number>({
+  create: () => 0,
   update: (v, tr) => {
-    for (const e of tr.effects) if (e.is(setFocusEffect)) v = e.value;
+    for (const e of tr.effects) {
+      if (e.is(setFocusEffect)) v = e.value ? Math.max(v, 1) : 0;
+      if (e.is(activateEffect)) v = 2;
+    }
+    if (v === 1 && (tr.docChanged || (tr.selection && tr.isUserEvent("select")) || tr.isUserEvent("input"))) v = 2;
     return v;
   },
 });
@@ -44,6 +53,33 @@ export const tabsField = StateField.define<Map<number, number>>({
     return v;
   },
 });
+
+/** Collapsed state per callout (by ordinal); absent means "use the collapse attribute". */
+export const collapsedField = StateField.define<Map<number, boolean>>({
+  create: () => new Map(),
+  update(v, tr) {
+    for (const e of tr.effects) if (e.is(toggleCalloutEffect)) {
+      v = new Map(v);
+      v.set(e.value.callout, e.value.collapsed);
+    }
+    return v;
+  },
+});
+
+const slideCache = new WeakMap<Text, boolean>();
+/** True when the document is a Reveal.js presentation (front matter or project format). */
+function isSlides(doc: Text): boolean {
+  let v = slideCache.get(doc);
+  if (v === undefined) {
+    const head = doc.sliceString(0, Math.min(doc.length, 4000));
+    const fm = head.startsWith("---") ? splitFrontMatter(head).meta : {};
+    const fmt = fm.format;
+    const names = typeof fmt === "string" ? [fmt] : fmt && typeof fmt === "object" ? Object.keys(fmt) : [];
+    v = names.some((n) => n.startsWith("revealjs")) || (!names.length && ctx.projectFormats.some((n) => n.startsWith("revealjs")));
+    slideCache.set(doc, v);
+  }
+  return v;
+}
 
 const headingCache = new WeakMap<Text, { chapter: string | null; headings: HeadingNumber[] }>();
 function headingNumbers(doc: Text): Map<number, string> {
@@ -80,7 +116,7 @@ export function buildDecorations(state: EditorState): DecorationSet {
   const blocks: { from: number; to: number }[] = [];
   const blockRanges = new Set<Range<Decoration>>();
   // Reveal source only around the cursor while the editor has focus.
-  const sel = state.field(focusField, false) ? state.selection.ranges : [];
+  const sel = state.field(focusField, false) === 2 ? state.selection.ranges : [];
 
   const touches = (from: number, to: number) => sel.some((r) => r.from <= to && r.to >= from);
   const linesTouch = (from: number, to: number) => touches(doc.lineAt(from).from, doc.lineAt(to).to);
@@ -101,8 +137,8 @@ export function buildDecorations(state: EditorState): DecorationSet {
     if (inBlock(from, to)) return;
     blocks.push({ from, to });
     const cls = containerClass(doc.lineAt(from).number);
-    const w = widget && cls ? new WrapWidget(widget, cls) : widget;
-    const r = (w ? Decoration.replace({ widget: w, block: true }) : Decoration.replace({ block: true })).range(from, to);
+    const w = widget && cls ? new WrapWidget(widget, cls) : widget ?? new HiddenBlockWidget();
+    const r = Decoration.replace({ widget: w, block: true }).range(from, to);
     blockRanges.add(r);
     ranges.push(r);
   };
@@ -143,7 +179,9 @@ export function buildDecorations(state: EditorState): DecorationSet {
   }
 
   let tabsetN = 0;
+  let calloutN = 0;
   const tabs = state.field(tabsField, false) ?? new Map<number, number>();
+  const collapsedMap = state.field(collapsedField, false) ?? new Map<number, boolean>();
   for (const d of divs) {
     const openLine = doc.lineAt(d.openFrom);
     const closeLine = d.closeFrom !== null ? doc.lineAt(d.closeFrom) : doc.line(doc.lines);
@@ -163,6 +201,22 @@ export function buildDecorations(state: EditorState): DecorationSet {
       addBlock(openLine.from, closeLine.to, new RefsWidget([...ctx.bib.keys()].join(",")));
       continue;
     }
+    // Side-by-side columns: rendered read-only until the cursor enters the block.
+    if (cls.includes("columns") && d.closeFrom !== null && !linesTouch(openLine.from, closeLine.to)) {
+      const cols = divs
+        .filter((c) => c.depth === d.depth + 1 && c.openFrom > d.openFrom && c.openFrom < d.closeFrom! && c.attrs.classes.includes("column") && c.closeFrom !== null)
+        .map((c) => {
+          const from = doc.lineAt(c.openFrom).number + 1;
+          const to = doc.lineAt(c.closeFrom!).number - 1;
+          const text = from <= to ? doc.sliceString(doc.line(from).from, doc.line(to).to) : "";
+          const html = renderBlocks(text, { ...inlineCtx, math: renderMath, image: (src) => resolveImage(src) });
+          return { width: c.attrs.kv.width ?? null, html };
+        });
+      if (cols.length) {
+        addBlock(openLine.from, closeLine.to, new ColumnsWidget(cols, openLine.from));
+        continue;
+      }
+    }
 
     addLine(openLine.number, `${kind} cm-div-open cm-depth-${d.depth}`);
     for (let ln = innerFirst; ln <= innerLast; ln++) addLine(ln, `${kind} cm-div-inner cm-depth-${d.depth}`);
@@ -176,11 +230,25 @@ export function buildDecorations(state: EditorState): DecorationSet {
     const headTouched = linesTouch(openLine.from, (titleLine ?? openLine).to);
     if (callout || isXref) {
       if (titleLine) addLine(titleLine.number, callout ? "cm-callout-title" : "cm-xdiv-title");
+      let collapsible = false;
+      let collapsed = false;
+      let calloutIdx = -1;
+      if (callout) {
+        calloutIdx = calloutN++;
+        collapsible = d.attrs.kv.collapse === "true" || d.attrs.kv.collapse === "false";
+        collapsed = collapsible && (collapsedMap.get(calloutIdx) ?? d.attrs.kv.collapse === "true");
+        const bodyFirst = titleLine ? titleLine.number + 1 : innerFirst;
+        if (collapsed && bodyFirst <= innerLast) {
+          const from = doc.line(bodyFirst).from;
+          const to = doc.line(innerLast).to;
+          if (touches(from, to)) collapsed = false;
+          else addBlock(from, to, null);
+        }
+      }
       if (!headTouched) {
         let widget: WidgetType;
         if (callout) {
-          const collapse = d.attrs.kv.collapse === "true";
-          widget = new CalloutHeaderWidget(callout[1] ?? "note", titleText ?? d.attrs.kv.title ?? null, collapse);
+          widget = new CalloutHeaderWidget(callout[1] ?? "note", titleText ?? d.attrs.kv.title ?? null, collapsible, collapsed, calloutIdx);
         } else {
           const t = ctx.index.targets.get(d.attrs.id!);
           const label = t ? t.display : XREF_TYPES[idType];
@@ -231,6 +299,12 @@ export function buildDecorations(state: EditorState): DecorationSet {
 
   // ---- Pass 2: the syntax tree ------------------------------------------------------------
   const headingNums = headingNumbers(doc);
+  const slides = isSlides(doc);
+  let slideN = 0;
+  const slideBreak = (lineFrom: number) => {
+    slideN++;
+    ranges.push(Decoration.line({ class: "cm-slide-break", attributes: { "data-slide": `Slide ${slideN}` } }).range(lineFrom));
+  };
   const outputs = state.field(outputsField, false);
   const listDepth = (n: SyntaxNode) => {
     let d = 0;
@@ -257,6 +331,7 @@ export function buildDecorations(state: EditorState): DecorationSet {
           const level = +n.name.slice(-1);
           const line = doc.lineAt(n.from);
           addLine(line.number, `cm-h cm-h${level}`);
+          if (slides && level <= 2) slideBreak(line.from);
           if (!touches(line.from, line.to)) {
             const mark = node.getChild("HeaderMark");
             if (mark) {
@@ -371,8 +446,8 @@ export function buildDecorations(state: EditorState): DecorationSet {
           const codeFrom = Math.min(first.to + 1, doc.length);
           const codeTo = closed ? Math.max(codeFrom, last.from - 1) : n.to;
           const code = doc.sliceString(codeFrom, codeTo);
-          if (executable && (lang === "mermaid") && !linesTouch(n.from, n.to) && closed) {
-            addBlock(first.from, last.to, new DiagramWidget(code, n.from));
+          if (executable && (lang === "mermaid" || lang === "dot") && !linesTouch(n.from, n.to) && closed) {
+            addBlock(first.from, last.to, new DiagramWidget(code, n.from, lang));
             return false;
           }
           const opts = executable ? cellOptions(code) : {};
@@ -445,6 +520,11 @@ export function buildDecorations(state: EditorState): DecorationSet {
         }
         case "HorizontalRule": {
           const line = doc.lineAt(n.from);
+          if (slides) {
+            slideBreak(line.from);
+            if (!touches(line.from, line.to)) hide(n.from, n.to);
+            return;
+          }
           if (!touches(line.from, line.to)) ranges.push(Decoration.replace({ widget: new HrWidget() }).range(n.from, n.to));
           return;
         }
@@ -498,7 +578,8 @@ export const livePreviewField = StateField.define<DecorationSet>({
     const changed =
       tr.docChanged ||
       tr.selection ||
-      tr.effects.some((e) => e.is(refreshEffect) || e.is(setTabEffect) || e.is(setFocusEffect)) ||
+      tr.effects.some((e) => e.is(refreshEffect) || e.is(setTabEffect) || e.is(toggleCalloutEffect)) ||
+      tr.startState.field(focusField, false) !== tr.state.field(focusField, false) ||
       tr.startState.field(outputsField, false) !== tr.state.field(outputsField, false) ||
       syntaxTree(tr.startState) !== syntaxTree(tr.state);
     return changed ? buildDecorations(tr.state) : deco;
@@ -510,7 +591,17 @@ export const livePreviewField = StateField.define<DecorationSet>({
 export const livePreviewHandlers = EditorView.domEventHandlers({
   mousedown(e, view) {
     const target = e.target as HTMLElement;
-    if (!(e.metaKey || e.ctrlKey)) return false;
+    if (!(e.metaKey || e.ctrlKey)) {
+      // First click into an unfocused editor: place the cursor using the layout the user
+      // actually clicked on, then reveal the source around it.
+      if (e.button !== 0 || e.defaultPrevented || e.shiftKey || view.state.field(focusField, false) === 2) return false;
+      const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
+      if (pos == null) return false;
+      e.preventDefault();
+      view.dispatch({ selection: { anchor: pos }, effects: activateEffect.of(null), userEvent: "select.pointer" });
+      view.focus();
+      return true;
+    }
     const link = target.closest<HTMLElement>(".cm-link");
     if (link?.dataset.url) {
       e.preventDefault();

@@ -1,11 +1,13 @@
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { type Backend, type KernelMsg, joinPath, dirname, relativeTo } from "../backend/types";
-import { parseQuartoYml, bookOrder, type ProjectInfo } from "../core/project";
+import { parseQuartoYml, bookOrder, insertChapter, type ProjectInfo } from "../core/project";
+import { projectTemplate, newDocument, type TemplateKind } from "../core/templates";
+import { parseFreeze, freezePath } from "../core/freeze";
 import { buildIndex, scanTargets, type XrefTarget, type HeadingNumber } from "../core/xref";
 import { parseBibtex } from "../core/bibtex";
 import { escapeHtml } from "../core/inline";
-import { editorExtensions } from "../editor/setup";
+import { editorExtensions, fileKind, previewCompartment, previewExtensions } from "../editor/setup";
 import { ctx, refreshEffect } from "../editor/context";
 import {
   outputsField, setCellEffect, kernelMsgEffect, loadOutputsEffect, listCells, hashCode,
@@ -13,6 +15,7 @@ import {
 } from "../editor/cells";
 import { md } from "../editor/widgets";
 import { QuickOpen } from "./quickOpen";
+import { formModal, choiceModal } from "./modal";
 import { $, h, debounce } from "./dom";
 
 const TEXT_EXT = /\.(qmd|md|markdown|Rmd|txt|yml|yaml|bib|py|R|css|scss|tex|json|lua)$/i;
@@ -67,6 +70,9 @@ export class App {
     this.docsText.clear();
     this.current = null;
     this.files = await this.backend.openProject(root);
+    if (!this.files.some((f) => /^_quarto\.ya?ml$/.test(f) || DOC_EXT.test(f))) {
+      await this.offerNewProject(root);
+    }
     await this.loadProjectConfig();
     $("#welcome").hidden = true;
     $("#app").hidden = false;
@@ -84,6 +90,13 @@ export class App {
   async loadProjectConfig() {
     const ymlName = this.files.find((f) => f === "_quarto.yml" || f === "_quarto.yaml");
     this.info = ymlName ? parseQuartoYml(await this.backend.readFile(this.abs(ymlName))) : null;
+    if (this.info?.error) this.setSaveStatus(`_quarto.yml: ${this.info.error}`, true);
+    const isBook = this.info?.type === "book";
+    $("#render-chapter").textContent = isBook ? "Render chapter" : "Render";
+    $("#render-book").textContent = isBook ? "Render book" : "Render project";
+    $("#render-book").hidden = !this.info;
+    const fmt = this.info?.config.format;
+    ctx.projectFormats = typeof fmt === "string" ? [fmt] : fmt && typeof fmt === "object" ? Object.keys(fmt) : [];
     document.title = this.info?.title ? `${this.info.title} — Folio` : "Folio";
     // Load all chapters so cross-references resolve across the whole book
     const chapterFiles = this.info ? bookOrder(this.info).map((c) => c.file) : this.files.filter((f) => DOC_EXT.test(f));
@@ -136,7 +149,7 @@ export class App {
     let doc = this.docs.get(path);
     if (!doc) {
       const text = await this.backend.readFile(path);
-      doc = { path, state: this.createState(text), savedText: text, saving: null, dirty: false };
+      doc = { path, state: this.createState(text, path), savedText: text, saving: null, dirty: false };
       this.docs.set(path, doc);
       if (DOC_EXT.test(path)) this.docsText.set(this.rel(path), text);
       this.loadCachedOutputs(doc);
@@ -145,6 +158,8 @@ export class App {
     ctx.file = path;
     localStorage.setItem(`folio.lastFile:${this.root}`, this.rel(path));
     this.view.setState(doc.state);
+    this.applyPreviewMode();
+    document.body.classList.toggle("source-file", fileKind(path) !== "markdown");
     this.reindex();
     this.view.dispatch({ effects: refreshEffect.of(null) });
     this.updateStatus();
@@ -152,18 +167,117 @@ export class App {
     else this.view.scrollDOM.scrollTop = 0;
   }
 
-  createState(text: string) {
+  createState(text: string, path: string) {
     return EditorState.create({
       doc: text,
       extensions: editorExtensions({
+        kind: fileKind(path),
+        preview: this.previewOn(),
         onChange: () => this.onDocChange(),
         onSave: () => this.current && this.flushSave(this.current),
         extraKeys: [
           { key: "Mod-p", run: () => (this.quickOpen.show(this.files.filter((f) => TEXT_EXT.test(f))), true) },
           { key: "Mod-Shift-r", run: () => (this.render(false), true) },
+          { key: "Mod-Shift-e", run: () => (this.togglePreview(), true) },
         ],
       }),
     });
+  }
+
+  // ---- view options -------------------------------------------------------
+
+  previewOn() {
+    return localStorage.getItem("folio.preview") !== "off";
+  }
+
+  togglePreview() {
+    localStorage.setItem("folio.preview", this.previewOn() ? "off" : "on");
+    this.applyPreviewMode();
+  }
+
+  /** Make the current editor match the live-preview / raw-source preference. */
+  applyPreviewMode() {
+    const on = this.previewOn();
+    $("#toggle-source").classList.toggle("active", !on);
+    $("#toggle-source").title = on ? "Show raw source (⌘⇧E)" : "Show live preview (⌘⇧E)";
+    if (previewCompartment.get(this.view.state) !== undefined) {
+      this.view.dispatch({ effects: previewCompartment.reconfigure(previewExtensions(on)) });
+    }
+  }
+
+  fontSize() {
+    const v = Number(localStorage.getItem("folio.fontSize"));
+    return v >= 12 && v <= 26 ? v : 16;
+  }
+
+  setFontSize(px: number) {
+    px = Math.min(26, Math.max(12, px));
+    localStorage.setItem("folio.fontSize", String(px));
+    document.documentElement.style.setProperty("--editor-font", `${px}px`);
+    $("#font-size").textContent = `${px}`;
+    this.view.requestMeasure();
+  }
+
+  // ---- creating files and projects ------------------------------------------
+
+  async newFile() {
+    if (!this.root) return;
+    const book = this.info?.type === "book";
+    const curRel = this.current && DOC_EXT.test(this.current.path) ? this.rel(this.current.path) : null;
+    const after = curRel && this.info && bookOrder(this.info).some((c) => c.file === curRel) ? curRel : null;
+    const fields = [
+      { name: "title", label: "Title", placeholder: "New chapter" },
+      { name: "file", label: "File name", placeholder: "new-chapter.qmd" },
+    ];
+    const res = await formModal(
+      "New document",
+      book ? [...fields, { name: "add", label: after ? `Add to book after ${after}` : "Add to book chapters", type: "checkbox" as const, value: true }] : fields,
+    );
+    if (!res) return;
+    const title = String(res.title || "Untitled");
+    let file = String(res.file || title.toLowerCase().replace(/[^\w]+/g, "-").replace(/^-|-$/g, "") || "untitled");
+    if (!/\.(qmd|md)$/i.test(file)) file += ".qmd";
+    const dir = curRel && curRel.includes("/") && !String(res.file).includes("/") ? curRel.slice(0, curRel.lastIndexOf("/") + 1) : "";
+    const rel = (dir + file).replace(/^\/+/, "");
+    if (await this.backend.exists(this.abs(rel))) {
+      this.setSaveStatus(`${rel} already exists`, true);
+      return this.openFile(this.abs(rel));
+    }
+    await this.backend.writeFile(this.abs(rel), newDocument(title));
+    if (book && res.add) {
+      const ymlName = this.files.find((f) => /^_quarto\.ya?ml$/.test(f))!;
+      const yml = await this.backend.readFile(this.abs(ymlName));
+      const updated = insertChapter(yml, after, rel);
+      if (updated !== yml) await this.backend.writeFile(this.abs(ymlName), updated);
+      else this.setSaveStatus("Couldn't find book.chapters in _quarto.yml — add the file yourself", true);
+    }
+    this.files = await this.backend.openProject(this.root);
+    await this.loadProjectConfig();
+    await this.openFile(this.abs(rel));
+  }
+
+  async offerNewProject(root: string) {
+    const choice = await choiceModal(
+      "This folder is empty",
+      "Create a new Quarto project here?",
+      [
+        { id: "book", label: "Book", description: "Chapters, cross-references and a bibliography (_quarto.yml + chapters)" },
+        { id: "presentation", label: "Presentation", description: "Reveal.js slides in slides.qmd" },
+        { id: "document", label: "Single document", description: "One document.qmd rendered to HTML" },
+        { id: "none", label: "Just open the folder" },
+      ],
+    );
+    if (!choice || choice === "none") return;
+    const name = root.split("/").pop() ?? "Untitled";
+    const res = await formModal("Project details", [
+      { name: "title", label: "Title", value: name.replace(/[-_]+/g, " ") },
+      { name: "author", label: "Author", value: localStorage.getItem("folio.author") ?? "" },
+    ]);
+    if (!res) return;
+    localStorage.setItem("folio.author", String(res.author));
+    const files = projectTemplate(choice as TemplateKind, String(res.title || name), String(res.author || ""));
+    for (const [rel, content] of Object.entries(files)) await this.backend.writeFile(joinPath(root, rel), content);
+    this.files = await this.backend.openProject(root);
   }
 
   revealLine(line: number) {
@@ -276,13 +390,19 @@ export class App {
     });
   }
 
-  runAll(uptoCursor = false) {
+  runAll(above = false) {
     const cells = listCells(this.view.state).filter((c) => c.executable && c.lang === "python");
     const head = this.view.state.selection.main.head;
+    // "above" = every cell that starts before the cell containing the cursor (or before the cursor)
+    const containing = cells.find((c) => head >= c.pos && head <= c.closeLineEnd);
+    const limit = containing ? containing.pos : head;
+    let n = 0;
     for (const c of cells) {
-      if (uptoCursor && c.pos > head) break;
+      if (above && c.pos >= limit) break;
       this.runCell(this.view, c.pos);
+      n++;
     }
+    if (above && !n) this.setSaveStatus("No Python cells above the cursor");
   }
 
   onKernelMsg(msg: KernelMsg) {
@@ -319,11 +439,30 @@ export class App {
   }, 500);
 
   async loadCachedOutputs(doc: OpenDoc) {
+    if (fileKind(doc.path) !== "markdown") return;
     try {
       const p = this.cachePath(doc);
-      if (!(await this.backend.exists(p))) return;
-      const cached = JSON.parse(await this.backend.readFile(p)).cells as CachedCell[];
-      const apply = (st: EditorState) => st.update({ effects: loadOutputsEffect.of(matchCachedOutputs(st, cached)) });
+      let cached: CachedCell[];
+      let fromFreeze = false;
+      if (await this.backend.exists(p)) cached = JSON.parse(await this.backend.readFile(p)).cells as CachedCell[];
+      else {
+        // Fall back to the outputs of the last `quarto render` (Quarto's freezer)
+        const fz = freezePath(this.rel(doc.path));
+        if (!(await this.backend.exists(this.abs(fz.json)))) return;
+        const frozen = parseFreeze(await this.backend.readFile(this.abs(fz.json)), this.abs(fz.dir));
+        const executable = listCells(doc.state).filter((c) => c.executable);
+        const all = listCells(doc.state);
+        // freeze cells are listed in executable-cell order; map to document cell indices
+        cached = frozen
+          .filter((f) => f.outputs.length && executable[f.index])
+          .map((f) => ({ index: all.indexOf(executable[f.index]), hash: hashCode(executable[f.index].code), outputs: f.outputs }));
+        fromFreeze = true;
+      }
+      const apply = (st: EditorState) => {
+        const m = matchCachedOutputs(st, cached);
+        if (fromFreeze) for (const [k, v] of m) m.set(k, { ...v, source: "freeze" });
+        return st.update({ effects: loadOutputsEffect.of(m) });
+      };
       if (doc === this.current) this.view.dispatch(apply(this.view.state));
       else doc.state = apply(doc.state).state;
     } catch {
@@ -375,6 +514,7 @@ export class App {
     ctx.fileUrl = (p) => this.backend.fileUrl(p);
     ctx.resolvePath = (rel) => (rel.startsWith("/") ? joinPath(this.root, rel) : joinPath(dirname(ctx.file), rel));
     ctx.runCell = (view, pos) => this.runCell(view, pos);
+    ctx.runAbove = () => this.runAll(true);
     ctx.openRef = (t: XrefTarget) => this.openFile(this.abs(t.file), { line: t.line });
     ctx.openLink = (url) => {
       if (/^[a-z]+:/i.test(url)) this.backend.openExternal(url);
@@ -403,6 +543,16 @@ export class App {
     $("#render-chapter").onclick = () => this.render(false);
     $("#render-book").onclick = () => this.render(true);
     $("#run-all").onclick = () => this.runAll();
+    $("#run-above").onclick = () => this.runAll(true);
+    $("#new-file").onclick = () => this.newFile();
+    $("#edit-config").onclick = () => {
+      const yml = this.files.find((f) => /^_quarto\.ya?ml$/.test(f));
+      if (yml) this.openFile(this.abs(yml));
+      else this.setSaveStatus("This folder has no _quarto.yml", true);
+    };
+    $("#font-dec").onclick = () => this.setFontSize(this.fontSize() - 1);
+    $("#font-inc").onclick = () => this.setFontSize(this.fontSize() + 1);
+    this.setFontSize(this.fontSize());
     $("#kernel-restart").onclick = () => {
       if (this.current) this.backend.kernelControl("restart", this.current.path);
     };
@@ -419,9 +569,10 @@ export class App {
       applyTheme();
       this.view.dispatch({ effects: refreshEffect.of(null) });
     };
-    $("#toggle-source").onclick = () => {
+    $("#toggle-focus").onclick = () => {
       document.body.classList.toggle("focus-mode");
     };
+    $("#toggle-source").onclick = () => this.togglePreview();
     document.addEventListener("keydown", (e) => {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "p" && !e.shiftKey) {
@@ -430,6 +581,12 @@ export class App {
       } else if (mod && e.key.toLowerCase() === "o") {
         e.preventDefault();
         pick();
+      } else if (mod && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        this.setFontSize(this.fontSize() + 1);
+      } else if (mod && e.key === "-") {
+        e.preventDefault();
+        this.setFontSize(this.fontSize() - 1);
       } else if (mod && e.key === "\\") {
         e.preventDefault();
         document.body.classList.toggle("no-sidebar");

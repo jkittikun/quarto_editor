@@ -1,0 +1,12 @@
+{
+  "hash": "abc",
+  "result": {
+    "engine": "jupyter",
+    "markdown": "# Methods {#sec-methods}\n\nWe build on @sec-intro.\n\n::: {#fig-sine .cell execution_count=1}\n``` {.python .cell-code}\n#| label: fig-sine\n#| fig-cap: \"A sine wave\"\nimport numpy as np\n```\n\n::: {.cell-output .cell-output-display}\n![A sine wave](methods_files/figure-html/fig-sine-output-1.png){#fig-sine width=571 height=411}\n:::\n:::\n\n\n::: {.cell execution_count=2}\n``` {.python .cell-code}\nprint(\"hello\")\nimport pandas as pd\npd.DataFrame({\"a\": [1]})\n```\n\n::: {.cell-output .cell-output-stdout}\n```\nhello\n```\n:::\n\n::: {.cell-output .cell-output-display execution_count=2}\n```{=html}\n<div><table class=\"dataframe\"><tr><td>1</td></tr></table></div>\n```\n:::\n:::\n\n\n::: {.cell execution_count=3}\n``` {.python .cell-code}\n1/0\n```\n\n::: {.cell-output .cell-output-error}\n```\n---------------------------------------------------------------------------\nZeroDivisionError                         Traceback (most recent call last)\nCell In[3], line 1\n----> 1 1/0\n\nZeroDivisionError: division by zero\n```\n:::\n:::\n",
+    "supporting": [
+      "methods_files"
+    ],
+    "filters": [],
+    "includes": {}
+  }
+}

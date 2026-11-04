@@ -5,7 +5,8 @@ import { parser as baseParser, GFM } from "@lezer/markdown";
 import { EditorState, EditorSelection } from "@codemirror/state";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { quartoMarkdown } from "../src/editor/quartoSyntax";
-import { buildDecorations, focusField, setFocusEffect, tabsField } from "../src/editor/livePreview";
+import { activateEffect } from "../src/editor/context";
+import { buildDecorations, focusField, tabsField } from "../src/editor/livePreview";
 import { outputsField, listCells, cellOptions, matchCachedOutputs, hashCode } from "../src/editor/cells";
 import { ctx } from "../src/editor/context";
 import { parseQuartoYml, bookOrder } from "../src/core/project";
@@ -63,7 +64,7 @@ function makeState(doc: string, cursor?: number, focused = true) {
     selection: EditorSelection.cursor(cursor ?? 0),
     extensions: [markdown({ base: markdownLanguage, extensions: [quartoMarkdown] }), outputsField, tabsField, focusField],
   });
-  if (focused) state = state.update({ effects: setFocusEffect.of(true) }).state;
+  if (focused) state = state.update({ effects: activateEffect.of(null) }).state;
   return state;
 }
 

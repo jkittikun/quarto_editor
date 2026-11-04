@@ -15,7 +15,10 @@ export interface EditorContext {
   openRef(target: XrefTarget): void;
   openLink(url: string): void;
   runCell(view: import("@codemirror/view").EditorView, fencePos: number): void;
+  runAbove(view: import("@codemirror/view").EditorView): void;
   kernelAvailable: boolean;
+  /** Output formats declared by the project (_quarto.yml `format:` keys). */
+  projectFormats: string[];
 }
 
 export const ctx: EditorContext = {
@@ -29,13 +32,31 @@ export const ctx: EditorContext = {
   openRef: () => {},
   openLink: () => {},
   runCell: () => {},
+  runAbove: () => {},
   kernelAvailable: true,
+  projectFormats: [],
 };
 
 /** Dispatch to force decorations to be recomputed after the context changed. */
 export const refreshEffect = StateEffect.define<null>();
 
-export type CellOutputs = { outputs: KernelOutput[]; running: boolean; req: string | null; hash: string; error?: string };
+export type CellOutputs = {
+  outputs: KernelOutput[];
+  running: boolean;
+  req: string | null;
+  hash: string;
+  error?: string;
+  source?: "freeze"; // outputs read from Quarto's _freeze (last quarto render)
+};
 
 /** Switch the visible tab of a `.panel-tabset` (by tabset ordinal in the document). */
 export const setTabEffect = StateEffect.define<{ tabset: number; tab: number }>();
+
+/** Expand/collapse a callout (by callout ordinal in the document). */
+export const toggleCalloutEffect = StateEffect.define<{ callout: number; collapsed: boolean }>();
+
+/**
+ * Mark the editor as actively edited: source is revealed around the cursor only after the
+ * selection has been placed while focused (see focusField in livePreview.ts).
+ */
+export const activateEffect = StateEffect.define<null>();

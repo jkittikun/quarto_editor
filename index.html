@@ -18,13 +18,19 @@
     <div id="app" hidden>
       <aside id="sidebar">
         <header>
-          <div id="book-title"></div>
-          <div id="book-author"></div>
+          <div class="book-head">
+            <div>
+              <div id="book-title"></div>
+              <div id="book-author"></div>
+            </div>
+            <button id="new-file" class="icon" title="New document">＋</button>
+          </div>
         </header>
         <nav id="outline"></nav>
         <footer>
           <button id="open-folder" title="Open project (⌘O)">Open…</button>
           <button id="quick-open" title="Go to file (⌘P)">Go to file ⌘P</button>
+          <button id="edit-config" title="Edit project settings (_quarto.yml)">⚙</button>
         </footer>
       </aside>
 
@@ -34,6 +40,7 @@
           <div id="crumb"></div>
           <div class="spacer"></div>
           <span id="kernel-status" data-state="idle" title="Jupyter kernel for this document">Python ● idle</span>
+          <button id="run-above" title="Run all cells above the cursor (⌘⌥↵)">Run above</button>
           <button id="run-all" title="Run all Python cells">Run all</button>
           <button id="kernel-interrupt" class="icon" title="Interrupt kernel">◼</button>
           <button id="kernel-restart" class="icon" title="Restart kernel">↻</button>
@@ -41,7 +48,13 @@
           <button id="render-chapter" title="quarto render this chapter (⇧⌘R)">Render chapter</button>
           <button id="render-book" title="quarto render the whole project">Render book</button>
           <span class="sep"></span>
-          <button id="toggle-source" class="icon" title="Focus mode">◐</button>
+          <button id="toggle-source" class="icon code-toggle" title="Show raw source (⌘⇧E)">&lt;/&gt;</button>
+          <span class="font-ctl">
+            <button id="font-dec" class="icon" title="Smaller text (⌘−)">A−</button>
+            <span id="font-size">16</span>
+            <button id="font-inc" class="icon" title="Larger text (⌘+)">A+</button>
+          </span>
+          <button id="toggle-focus" class="icon" title="Focus mode">◐</button>
           <button id="toggle-theme" class="icon" title="Theme">☾</button>
         </div>
         <div id="editor"></div>

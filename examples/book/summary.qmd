@@ -2,4 +2,27 @@
 
 In summary, this book has no content whatsoever.
 
+:::: {.columns}
+
+::: {.column width="50%"}
+**Left column**
+Columns render **side by side** until you click into them.
+:::
+
+::: {.column width="50%"}
+**Right column**
+- Math: $a^2 + b^2 = c^2$
+- A reference: @fig-growth
+:::
+
+::::
+
+```{dot}
+digraph G {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  Write -> Preview -> Render;
+}
+```
+
 {{< pagebreak >}}

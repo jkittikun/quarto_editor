@@ -111,6 +111,18 @@ python3 -m pip install jupyter_client ipykernel
 The macOS app picks up your login shell's `PATH`, so Homebrew, conda and pyenv installs are found even
 when you launch it from Finder.
 
+## Working with projects
+
+* **New document:** the **＋** button in the sidebar creates a `.qmd` file. In a book, it can
+  also add the file to `book.chapters` right after the current chapter. Folio edits `_quarto.yml` as
+  text, so your comments and formatting are kept.
+* **Project settings:** **⚙** in the sidebar opens `_quarto.yml` in a plain YAML editor. When you save,
+  the sidebar, numbering and bibliography reload, and YAML errors show in the status bar.
+* **Empty folder:** opening a folder with no Quarto files offers to create a **Book**, a
+  **Presentation** (Reveal.js) or a **Single document**.
+* **Raw source:** **`</>`** switches between live preview and the plain `.qmd` text.
+  **A− / A+** change the text size.
+
 ## Keyboard
 
 | Keys | Action |
@@ -118,6 +130,9 @@ when you launch it from Finder.
 | ⌘P | Go to file / chapter |
 | ⌘O | Open project folder |
 | ⌘↵ / ⇧↵ | Run cell / run cell and move to the next |
+| ⌘⌥↵ | Run all cells above the cursor |
+| ⌘⇧E | Toggle raw source view (`</>`) |
+| ⌘+ / ⌘− | Larger / smaller text (`A+` / `A−`) |
 | ⌘B / ⌘I / ⌘E | Bold / italic / inline code |
 | ⌘-click | Follow a cross-reference or link |
 | ⌘F | Find & replace |
@@ -135,16 +150,18 @@ when you launch it from Finder.
 | `$inline$`, `$$display$$ {#eq-…}` | ✅ KaTeX, with equation numbers |
 | `![cap](img.png){#fig-… width=60%}` | ✅ with "Figure n.m:" caption |
 | Pipe tables + `: caption {#tbl-…}` | ✅ |
-| Callouts (all 5 types, titles, `collapse`) | ✅ |
+| Callouts (all 5 types, titles) | ✅ — `collapse="true"/"false"` gives a ▸/▾ toggle |
 | `.panel-tabset` | ✅ clickable tabs |
 | Theorem-like divs (`#thm-…`, `#lem-…`, `#def-…`, …) | ✅ "Theorem 2.1 (Name)" |
-| Other fenced divs (`.columns`, custom classes) | ✅ shown as a framed block |
-| ```` ```{mermaid} ```` | ✅ rendered diagram |
-| ```` ```{python} ```` | ✅ syntax-highlighted cell; run it for inline output |
+| `.columns` / `.column width=…` | ✅ side by side (editable when you click in) |
+| Other fenced divs (custom classes) | ✅ shown as a framed block |
+| ```` ```{mermaid} ```` / ```` ```{dot} ```` | ✅ rendered diagram (Mermaid / Graphviz) |
+| ```` ```{python} ```` | ✅ syntax-highlighted cell; run it for inline output, or see the outputs of your last `quarto render` (read from `_freeze/`) |
+| Reveal.js presentations (`format: revealjs`) | ✅ slide dividers with slide numbers |
 | YAML front matter | ✅ title + metadata chips |
 | `[@cite]`, `@cite`, `@fig-x` etc. | ✅ resolved across the book |
 | Shortcodes `{{< … >}}` | shown as code chips |
-| `{r}`/`{julia}` cells, `{dot}`, Observable JS | syntax-highlighted only; use **Render** |
+| `{r}`/`{julia}` cells, Observable JS | syntax-highlighted only; use **Render** (their `_freeze` outputs still show) |
 
 ## Project layout
 
@@ -161,10 +178,19 @@ examples/book/  sample Quarto book used for development and tests
 
 ## Development
 
-Unit tests (parser, cross-refs, decorations, cells):
+Unit tests (parser, cross-refs, decorations, cells, freeze, templates):
 
 ```bash
 npm test
+```
+
+End-to-end tests run Folio in a headless browser against a scratch copy of the sample book. They
+check that edits in rendered mode change only the typed bytes on disk, and they also test running a
+Python cell, creating a chapter, creating a project in an empty folder, and `quarto render` (when
+Quarto is installed). CI runs all of these on every push.
+
+```bash
+npm run e2e
 ```
 
 Rust tests:

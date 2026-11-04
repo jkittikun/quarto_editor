@@ -1,0 +1,34 @@
+---
+title: "Folio Slides"
+author: "Jane Doe"
+format: revealjs
+---
+
+## Getting started
+
+- Each `##` heading starts a new slide
+- Use `---` for a slide without a title
+
+## Two columns
+
+:::: {.columns}
+
+::: {.column width="50%"}
+Left column
+:::
+
+::: {.column width="50%"}
+Right column
+:::
+
+::::
+
+## Math and code
+
+$$
+e^{i\pi} + 1 = 0
+$$
+
+```{python}
+1 + 1
+```

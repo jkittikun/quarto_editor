@@ -1,5 +1,5 @@
-import { EditorSelection, type EditorState, type Extension } from "@codemirror/state";
-import { EditorView, keymap, drawSelection, dropCursor, rectangularSelection, placeholder } from "@codemirror/view";
+import { Compartment, EditorSelection, type EditorState, type Extension } from "@codemirror/state";
+import { EditorView, ViewPlugin, keymap, drawSelection, dropCursor, rectangularSelection, placeholder } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
@@ -9,7 +9,7 @@ import { pythonLanguage } from "@codemirror/lang-python";
 import { yamlLanguage } from "@codemirror/lang-yaml";
 import { tags as t } from "@lezer/highlight";
 import { quartoMarkdown } from "./quartoSyntax";
-import { livePreviewField, livePreviewHandlers, tabsField, focusField, focusTracking } from "./livePreview";
+import { livePreviewField, livePreviewHandlers, tabsField, focusField, focusTracking, collapsedField } from "./livePreview";
 import { outputsField, listCells } from "./cells";
 import { quartoCompletion } from "./completion";
 import { ctx } from "./context";
@@ -79,14 +79,58 @@ function wrapSelection(mark: string) {
   };
 }
 
+/**
+ * Rendered widgets (images, math fonts, diagrams, outputs) change size after CodeMirror has
+ * measured them. Re-measure whenever the content resizes so the height map — and therefore
+ * click positions — stay accurate.
+ */
+const remeasureOnResize = ViewPlugin.fromClass(
+  class {
+    observer: ResizeObserver | null = null;
+    constructor(readonly view: EditorView) {
+      if (typeof ResizeObserver === "undefined") return;
+      let last = -1;
+      this.observer = new ResizeObserver(() => {
+        const h = view.contentDOM.offsetHeight;
+        if (h !== last) {
+          last = h;
+          view.requestMeasure();
+        }
+      });
+      this.observer.observe(view.contentDOM);
+      view.contentDOM.addEventListener("load", () => view.requestMeasure(), true); // images
+      (document as any).fonts?.ready?.then(() => view.requestMeasure());
+    }
+    destroy() {
+      this.observer?.disconnect();
+    }
+  },
+);
+
+export type FileKind = "markdown" | "yaml" | "python" | "plain";
+
+export function fileKind(path: string): FileKind {
+  if (/\.(qmd|md|markdown|Rmd)$/i.test(path)) return "markdown";
+  if (/\.ya?ml$/i.test(path)) return "yaml";
+  if (/\.py$/i.test(path)) return "python";
+  return "plain";
+}
+
+/** Live preview can be switched off (raw source view) without rebuilding the editor state. */
+export const previewCompartment = new Compartment();
+export const previewExtensions = (on: boolean): Extension => (on ? [livePreviewField, livePreviewHandlers] : []);
+
 export interface SetupOptions {
   onChange: (state: EditorState) => void;
   onSave: () => void;
   extraKeys?: { key: string; run: () => boolean }[];
+  kind?: FileKind;
+  preview?: boolean;
 }
 
 export function editorExtensions(opts: SetupOptions): Extension[] {
-  return [
+  const kind = opts.kind ?? "markdown";
+  const common: Extension[] = [
     history(),
     drawSelection(),
     dropCursor(),
@@ -96,34 +140,52 @@ export function editorExtensions(opts: SetupOptions): Extension[] {
     closeBrackets(),
     highlightSelectionMatches(),
     EditorView.lineWrapping,
+    syntaxHighlighting(highlight),
+    EditorView.updateListener.of((u) => {
+      if (u.docChanged) opts.onChange(u.state);
+    }),
+  ];
+  const baseKeys = [
+    { key: "Mod-s", run: () => (opts.onSave(), true), preventDefault: true },
+    ...(opts.extraKeys ?? []).map((k) => ({ key: k.key, run: k.run, preventDefault: true })),
+    ...closeBracketsKeymap,
+    ...searchKeymap,
+    ...historyKeymap,
+    indentWithTab,
+    ...defaultKeymap,
+  ];
+  if (kind !== "markdown") {
+    const lang = kind === "yaml" ? yamlLanguage : kind === "python" ? pythonLanguage : null;
+    return [
+      ...common,
+      ...(lang ? [lang] : []),
+      EditorView.contentAttributes.of({ class: "cm-source-file" }),
+      EditorView.theme({ ".cm-scroller": { fontFamily: "var(--mono)", lineHeight: "1.6" } }),
+      keymap.of(baseKeys),
+    ];
+  }
+  return [
+    ...common,
     placeholder("Start writing… (type / for blocks, @ for references)"),
     markdown({ base: markdownLanguage, codeLanguages, extensions: [quartoMarkdown], addKeymap: true }),
-    syntaxHighlighting(highlight),
     outputsField,
     tabsField,
+    collapsedField,
     focusField,
     focusTracking,
     EditorView.theme({ ".cm-scroller": { fontFamily: "var(--sans)", lineHeight: "1.7" } }),
-    livePreviewField,
-    livePreviewHandlers,
+    previewCompartment.of(previewExtensions(opts.preview ?? true)),
+    remeasureOnResize,
     quartoCompletion,
     keymap.of([
       { key: "Mod-Enter", run: (v) => runCellAtCursor(v, false) },
       { key: "Shift-Enter", run: (v) => runCellAtCursor(v, true) },
+      { key: "Mod-Alt-Enter", run: (v) => (ctx.runAbove(v), true) },
       { key: "Mod-b", run: wrapSelection("**") },
       { key: "Mod-i", run: wrapSelection("*") },
       { key: "Mod-e", run: wrapSelection("`") },
-      { key: "Mod-s", run: () => (opts.onSave(), true), preventDefault: true },
-      ...(opts.extraKeys ?? []).map((k) => ({ key: k.key, run: k.run, preventDefault: true })),
-      ...closeBracketsKeymap,
       ...completionKeymap,
-      ...searchKeymap,
-      ...historyKeymap,
-      indentWithTab,
-      ...defaultKeymap,
+      ...baseKeys,
     ]),
-    EditorView.updateListener.of((u) => {
-      if (u.docChanged) opts.onChange(u.state);
-    }),
   ];
 }

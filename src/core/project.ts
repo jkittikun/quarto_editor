@@ -22,6 +22,7 @@ export interface ProjectInfo {
   bibliography: string[]; // relative paths
   outputDir: string | null;
   config: Record<string, any>;
+  error: string | null; // YAML parse error, if any
 }
 
 function asList(v: unknown): unknown[] {
@@ -60,10 +61,13 @@ function parseChapterList(list: unknown, appendix: boolean): OutlineItem[] {
 
 export function parseQuartoYml(src: string): ProjectInfo {
   let cfg: Record<string, any> = {};
+  let error: string | null = null;
   try {
     cfg = (load(src) as Record<string, any>) ?? {};
-  } catch {
+    if (typeof cfg !== "object") cfg = {};
+  } catch (e: any) {
     cfg = {};
+    error = String(e?.message ?? e).split("\n")[0];
   }
   const project = cfg.project ?? {};
   const type = (project.type ?? "default") as ProjectInfo["type"];
@@ -82,6 +86,7 @@ export function parseQuartoYml(src: string): ProjectInfo {
     bibliography,
     outputDir: project["output-dir"] ?? null,
     config: cfg,
+    error,
   };
 }
 
@@ -109,4 +114,63 @@ export function splitFrontMatter(src: string): { yaml: string | null; meta: Reco
     meta = {};
   }
   return { yaml: m[1], meta: typeof meta === "object" ? meta : {}, bodyOffset: m[0].length };
+}
+
+/**
+ * Insert `newFile` into `book.chapters` of a _quarto.yml by editing the text (comments and
+ * formatting are preserved). Inserts after the entry for `afterFile` when found, otherwise after
+ * the last chapter entry. Returns the text unchanged when there is no `book.chapters` list.
+ */
+export function insertChapter(yml: string, afterFile: string | null, newFile: string): string {
+  const lines = yml.split("\n");
+  const itemRe = /^(\s*)-\s+(?:href:\s*)?["']?([^"'#\s]+)["']?\s*(#.*)?$/;
+  // locate book: and its chapters: key
+  let bookLine = -1;
+  let bookIndent = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(\s*)book:\s*(#.*)?$/.exec(lines[i]);
+    if (m) {
+      bookLine = i;
+      bookIndent = m[1].length;
+      break;
+    }
+  }
+  if (bookLine < 0) return yml;
+  let chaptersLine = -1;
+  let chaptersIndent = -1;
+  for (let i = bookLine + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.trim() || /^\s*#/.test(l)) continue;
+    const ind = l.length - l.trimStart().length;
+    if (ind <= bookIndent) break;
+    const m = /^(\s*)chapters:\s*(#.*)?$/.exec(l);
+    if (m) {
+      chaptersLine = i;
+      chaptersIndent = m[1].length;
+      break;
+    }
+  }
+  if (chaptersLine < 0) return yml;
+  // the chapters block: following lines indented deeper than `chapters:` (or "- " at same indent)
+  let end = chaptersLine;
+  let lastItem = -1;
+  let lastItemIndent = chaptersIndent + 2;
+  let afterIdx = -1;
+  for (let i = chaptersLine + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.trim() || /^\s*#/.test(l)) continue;
+    const ind = l.length - l.trimStart().length;
+    if (ind < chaptersIndent || (ind === chaptersIndent && !l.trimStart().startsWith("-"))) break;
+    end = i;
+    const m = itemRe.exec(l);
+    if (m && /\.(q?md|ipynb|Rmd)$/i.test(m[2])) {
+      lastItem = i;
+      lastItemIndent = m[1].length;
+      if (afterFile && m[2] === afterFile) afterIdx = i;
+    }
+  }
+  const at = afterIdx >= 0 ? afterIdx : lastItem >= 0 ? lastItem : end;
+  const indent = " ".repeat(afterIdx >= 0 ? itemRe.exec(lines[afterIdx])![1].length : lastItemIndent);
+  lines.splice(at + 1, 0, `${indent}- ${newFile}`);
+  return lines.join("\n");
 }
