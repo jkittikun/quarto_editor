@@ -171,13 +171,32 @@ export function folioApi(opts: { defaultRoot?: string; kernelScript: string }): 
                 if (m) output = path.resolve(cwd, m[1].trim());
                 send("render", { req: id, line });
               };
-              createInterface({ input: child.stdout }).on("line", onLine);
-              createInterface({ input: child.stderr }).on("line", onLine);
+              let open = 2;
+              let streamsDone: () => void = () => {};
+              const drained = new Promise<void>((r) => (streamsDone = r));
+              for (const stream of [child.stdout, child.stderr]) {
+                const rl = createInterface({ input: stream });
+                rl.on("line", onLine);
+                rl.on("close", () => --open === 0 && streamsDone());
+              }
+              let finished = false;
+              const finish = (result: { ok: boolean; code: number | null; output: string | null }) => {
+                if (finished) return;
+                finished = true;
+                send("render", { req: id, done: true, result });
+              };
               child.on("error", (e) => {
                 send("render", { req: id, line: `Could not run quarto: ${e.message}. Is Quarto installed and on PATH?` });
-                send("render", { req: id, done: true, result: { ok: false, code: null, output: null } });
+                finish({ ok: false, code: null, output: null });
               });
-              child.on("close", (code) => send("render", { req: id, done: true, result: { ok: code === 0, code, output } }));
+              // Finish when quarto *exits*, not when its pipes close: Quarto can leave a background
+              // process (its Jupyter daemon) that inherits stdout/stderr and keeps them open.
+              child.on("exit", async (code) => {
+                await Promise.race([drained, new Promise((r) => setTimeout(r, 500))]);
+                child.stdout.destroy();
+                child.stderr.destroy();
+                finish({ ok: code === 0, code, output });
+              });
               return json(res, { ok: true });
             }
           }

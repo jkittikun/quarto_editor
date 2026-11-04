@@ -47,7 +47,8 @@ async function waitFor(fn, timeout = 15000, step = 200) {
   }
   return false;
 }
-const hasQuarto = (() => {
+const FAKE_QUARTO = !!process.env.E2E_FAKE_QUARTO;
+const hasQuarto = FAKE_QUARTO || (() => {
   try {
     execSync("quarto --version", { stdio: "ignore" });
     return true;
@@ -58,7 +59,7 @@ const hasQuarto = (() => {
 
 const vite = spawn("npx", ["vite", "--port", String(PORT), "--strictPort"], {
   cwd: ROOT,
-  env: { ...process.env, FOLIO_ROOT: book },
+  env: { ...process.env, FOLIO_ROOT: book, ...(FAKE_QUARTO ? { QUARTO_PATH: join(ROOT, "tests/e2e/fake-quarto.sh") } : {}) },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let viteOut = "";
@@ -171,11 +172,12 @@ try {
     await waitFor(() => page.evaluate(() => !!folio.current));
     await page.evaluate(() => folio.openFile(folio.abs("intro.qmd")));
     await page.click("#render-chapter");
-    const done = await waitFor(() => page.locator("#log-title").innerText().then((t) => /complete|failed/.test(t)), 240000, 1000);
+    const t0 = Date.now();
+    const done = await waitFor(() => page.locator("#log-title").innerText().then((t) => /complete|failed/.test(t)), FAKE_QUARTO ? 15000 : 240000, 250);
     const title = await page.locator("#log-title").innerText();
-    ok(done && title.includes("complete"), `quarto render finished (${title})`);
+    ok(done && title.includes("complete"), `quarto render finished (${title}, ${((Date.now() - t0) / 1000).toFixed(1)} s${FAKE_QUARTO ? ", fake quarto" : ""})`);
     ok(existsSync(join(book, "_book/intro.html")), "_book/intro.html exists");
-    if (!title.includes("complete")) console.log(await page.locator("#log").innerText());
+    if (!title.includes("complete")) console.log((await page.locator("#log").innerText()).split("\n").slice(-30).join("\n"));
   } else {
     console.log("- quarto not on PATH: skipping render test");
   }
