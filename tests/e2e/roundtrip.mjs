@@ -13,7 +13,7 @@
  * Set E2E_SHOTS=<dir> to save screenshots.
  */
 import { spawn, execSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -132,6 +132,14 @@ try {
     console.log("--- expected\n" + expected + "\n--- actual\n" + actual);
   }
 
+  // ---------------------------------------------------------------- 1b. external edits
+  writeFileSync(introPath, readFileSync(introPath, "utf8") + "\nAn EXTERNAL edit.\n");
+  ok(await waitFor(() => page.locator(".cm-content").innerText().then((t) => t.includes("An EXTERNAL edit."))), "edits made outside Folio appear in the open chapter");
+  mkdirSync(join(book, "parts/deep"), { recursive: true });
+  await sleep(300);
+  writeFileSync(join(book, "parts/deep/new.qmd"), "# Deep\n");
+  ok(await waitFor(() => page.evaluate(() => folio.files.includes("parts/deep/new.qmd"))), "files created in new subfolders are picked up");
+
   // ---------------------------------------------------------------- 2. kernel
   if (!process.env.E2E_SKIP_KERNEL) {
     await page.evaluate(() => folio.openFile(folio.abs("methods.qmd")));
@@ -188,6 +196,7 @@ try {
   }
 
   ok(errors.length === 0, `no page errors${errors.length ? ": " + errors.join("; ") : ""}`);
+  ok(vite.exitCode === null, `dev server still running${vite.exitCode !== null ? ` (exited with ${vite.exitCode})` : ""}`);
 } catch (e) {
   ok(false, `unexpected error: ${e.stack ?? e}`);
 } finally {
@@ -195,5 +204,6 @@ try {
   vite.kill();
   if (!process.env.E2E_KEEP) rmSync(work, { recursive: true, force: true });
 }
+if (failures) console.log("--- dev server output (last 40 lines)\n" + viteOut.split("\n").slice(-40).join("\n"));
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

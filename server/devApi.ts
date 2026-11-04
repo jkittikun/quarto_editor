@@ -34,6 +34,73 @@ export function listProjectFiles(root: string): string[] {
   return out.sort();
 }
 
+const isIgnoredDir = (name: string) => IGNORE_DIRS.has(name) || name.endsWith("_files") || (name.startsWith(".") && name !== ".folio");
+
+/**
+ * Watch a project folder for changes, one non-recursive watcher per directory.
+ *
+ * Node's `fs.watch(..., { recursive: true })` on Linux throws an uncaught ENOENT (crashing the
+ * dev server) when a directory is created and deleted quickly — which is exactly what
+ * `quarto render` does with its temporary folders. Watching directories individually lets us
+ * skip build/temp folders entirely and treat every fs error as non-fatal.
+ */
+export function watchTree(root: string, onChange: (absPath: string) => void): { close(): void } {
+  const watchers = new Map<string, fs.FSWatcher>();
+  let closed = false;
+  const unwatch = (dir: string) => {
+    for (const [d, w] of watchers) {
+      if (d === dir || d.startsWith(dir + path.sep)) {
+        w.close();
+        watchers.delete(d);
+      }
+    }
+  };
+  const watchDir = (dir: string) => {
+    if (closed || watchers.has(dir)) return;
+    let w: fs.FSWatcher;
+    try {
+      w = fs.watch(dir, (_ev, file) => {
+        if (!file) return;
+        const p = path.join(dir, String(file));
+        let st: fs.Stats | null = null;
+        try {
+          st = fs.statSync(p);
+        } catch {
+          /* deleted */
+        }
+        if (st?.isDirectory()) {
+          if (!isIgnoredDir(path.basename(p))) {
+            watchDir(p);
+            onChange(p);
+          }
+          return;
+        }
+        if (!st && watchers.has(p)) unwatch(p);
+        onChange(p);
+      });
+    } catch {
+      return; // vanished before we could watch it
+    }
+    w.on("error", () => unwatch(dir));
+    watchers.set(dir, w);
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) if (e.isDirectory() && !isIgnoredDir(e.name)) watchDir(path.join(dir, e.name));
+  };
+  watchDir(root);
+  return {
+    close() {
+      closed = true;
+      for (const w of watchers.values()) w.close();
+      watchers.clear();
+    },
+  };
+}
+
 export function findPython(root: string): string {
   if (process.env.FOLIO_PYTHON) return process.env.FOLIO_PYTHON;
   if (process.env.QUARTO_PYTHON) return process.env.QUARTO_PYTHON;
@@ -47,7 +114,7 @@ export function findPython(root: string): string {
 export function folioApi(opts: { defaultRoot?: string; kernelScript: string }): Plugin {
   const roots = new Set<string>();
   const clients = new Set<ServerResponse>();
-  const watchers = new Map<string, fs.FSWatcher>();
+  const watchers = new Map<string, { close(): void }>();
   let kernel: ChildProcess | null = null;
   let kernelRoot = "";
 
@@ -92,18 +159,15 @@ export function folioApi(opts: { defaultRoot?: string; kernelScript: string }): 
     if (!watchers.has(abs)) {
       let pending = new Set<string>();
       let timer: NodeJS.Timeout | null = null;
-      const w = fs.watch(abs, { recursive: true }, (_ev, file) => {
-        if (!file) return;
-        const f = String(file);
-        if (f.split(path.sep).some((s) => IGNORE_DIRS.has(s) || s.endsWith("_files"))) return;
-        pending.add(path.join(abs, f));
+      const notify = (p: string) => {
+        pending.add(p);
         timer ??= setTimeout(() => {
           send("fs", [...pending]);
           pending = new Set();
           timer = null;
         }, 120);
-      });
-      watchers.set(abs, w);
+      };
+      watchers.set(abs, watchTree(abs, notify));
     }
     return listProjectFiles(abs);
   };
