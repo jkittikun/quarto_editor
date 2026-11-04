@@ -1,0 +1,3 @@
+# Extra material {#sec-extra}
+
+Appendix content referencing @fig-growth.

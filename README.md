@@ -1,0 +1,162 @@
+# Folio
+
+A lightweight desktop editor for **Quarto** (`.qmd`) books, with what-you-see-is-what-you-get live preview.
+It feels like Obsidian or Notion, but it understands Quarto.
+
+* **One pane, live preview.** Headings, emphasis, math, callouts, figures, tables, tabsets, diagrams,
+  citations and cross-references render in place as you type. The raw syntax appears only where your
+  cursor is, the same way Obsidian's live preview works.
+* **Your source is never rewritten.** Folio decorates the text and never round-trips it through a converter.
+  Saving writes exactly the bytes you typed, so diffs stay clean (unlike some visual editors that
+  reformat Markdown).
+* **Book-aware.**
+  * The sidebar shows your book from `_quarto.yml`: parts, chapters, appendices, and the headings of
+    the current chapter.
+  * Chapter and section numbers match Quarto's.
+  * Cross-references resolve across the whole book: `@fig-…`, `@tbl-…`, `@eq-…`, `@sec-…`, `@thm-…`
+    and the other theorem types. Each shows as "Figure 2.1", and ⌘-click jumps to the target, even in
+    another chapter.
+  * Citations (`[@key]`, `@key`, `[-@key]`) come from your `.bib` and render author-date. The `::: {#refs}`
+    div shows the bibliography.
+* **Python cells run live.** Press ⌘↵ in a ```` ```{python} ```` cell (or click **▶ Run**).
+  * Each chapter gets its own Jupyter kernel, working directory = the chapter's folder, the same as Quarto.
+  * Plots, pandas tables, stdout and errors appear inline under the cell.
+  * Outputs are cached in `.folio/cache/`, so reopening a chapter shows them without re-running.
+  * Outputs fade when the code has changed since the last run.
+* **Full fidelity when you want it.** **Render chapter** / **Render book** runs `quarto render`,
+  streams the log, and opens the result.
+* **Notion-style inserts.** Type `/` on an empty line for callouts, figures, equations, tables, tabsets,
+  theorems, columns, Python cells and Mermaid diagrams. Type `@` to autocomplete labels and citation keys.
+* **Light.** It's a Tauri 2 app that uses the system WebView, so the bundle is a few MB instead of
+  Electron's 150+, and it starts instantly.
+
+## Install & run (macOS)
+
+Prerequisites:
+- [Rust](https://rustup.rs)
+- Node 20+
+- [Quarto](https://quarto.org/docs/get-started/), for the Render buttons
+- Python with `jupyter_client` and `ipykernel`, for running cells (Quarto already needs these for Python books)
+
+```bash
+npm install
+```
+
+Run the app in development mode:
+
+```bash
+npm run tauri dev
+```
+
+Build `Folio.app` and a `.dmg` into `src-tauri/target/release/bundle/`:
+
+```bash
+npm run tauri build
+```
+
+The app isn't code-signed. The first time, right-click `Folio.app` and choose **Open**, or run:
+
+```bash
+xattr -cr /Applications/Folio.app
+```
+
+### Try it in a browser (no Rust needed)
+
+```bash
+npm install
+```
+
+```bash
+FOLIO_ROOT=/path/to/your/book npm run dev
+```
+
+Then open http://127.0.0.1:1420. A small Vite middleware (`server/devApi.ts`) provides file access, the
+Python kernel and `quarto render`. It only serves folders you open, and it listens only on localhost.
+Without `FOLIO_ROOT`, it opens the sample book in `examples/book`.
+
+## Python environment
+
+Folio looks for the Python that runs your cells in this order:
+1. `FOLIO_PYTHON`
+2. `QUARTO_PYTHON`
+3. `.venv/bin/python`, `venv/bin/python` or `env/bin/python` in the project
+4. `python3`
+
+That interpreter needs `jupyter_client` and `ipykernel`:
+
+```bash
+python3 -m pip install jupyter_client ipykernel
+```
+
+The macOS app picks up your login shell's `PATH`, so Homebrew, conda and pyenv installs are found even
+when you launch it from Finder.
+
+## Keyboard
+
+| Keys | Action |
+|---|---|
+| ⌘P | Go to file / chapter |
+| ⌘O | Open project folder |
+| ⌘↵ / ⇧↵ | Run cell / run cell and move to the next |
+| ⌘B / ⌘I / ⌘E | Bold / italic / inline code |
+| ⌘-click | Follow a cross-reference or link |
+| ⌘F | Find & replace |
+| ⇧⌘R | Render current chapter with Quarto |
+| ⌘\\ | Toggle sidebar |
+| `/` | Insert block (on an empty line) |
+| `@` | Reference / citation autocomplete |
+
+## What renders live
+
+| Quarto feature | Live preview |
+|---|---|
+| Headings with `{#sec-…}` / `{.unnumbered}` | ✅ numbered like Quarto |
+| `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``, `^sup^`, `~sub~`, links, `[span]{.class}` | ✅ |
+| `$inline$`, `$$display$$ {#eq-…}` | ✅ KaTeX, with equation numbers |
+| `![cap](img.png){#fig-… width=60%}` | ✅ with "Figure n.m:" caption |
+| Pipe tables + `: caption {#tbl-…}` | ✅ |
+| Callouts (all 5 types, titles, `collapse`) | ✅ |
+| `.panel-tabset` | ✅ clickable tabs |
+| Theorem-like divs (`#thm-…`, `#lem-…`, `#def-…`, …) | ✅ "Theorem 2.1 (Name)" |
+| Other fenced divs (`.columns`, custom classes) | ✅ shown as a framed block |
+| ```` ```{mermaid} ```` | ✅ rendered diagram |
+| ```` ```{python} ```` | ✅ syntax-highlighted cell; run it for inline output |
+| YAML front matter | ✅ title + metadata chips |
+| `[@cite]`, `@cite`, `@fig-x` etc. | ✅ resolved across the book |
+| Shortcodes `{{< … >}}` | shown as code chips |
+| `{r}`/`{julia}` cells, `{dot}`, Observable JS | syntax-highlighted only; use **Render** |
+
+## Project layout
+
+```
+src/core/       pure logic: _quarto.yml outline, cross-ref index & numbering, BibTeX, inline Markdown
+src/editor/     CodeMirror 6: Quarto syntax extensions, live-preview decorations, widgets, cells, completions
+src/ui/         app shell: sidebar, quick open, autosave, kernel routing, render panel
+src/backend/    Backend interface + Tauri and HTTP implementations
+src-tauri/      Rust: scoped file I/O, file watcher, kernel process, quarto render
+kernel/         folio_kernel.py — jupyter_client bridge (JSON lines over stdio)
+server/         Vite dev middleware mirroring the Rust commands (browser mode)
+examples/book/  sample Quarto book used for development and tests
+```
+
+## Development
+
+Unit tests (parser, cross-refs, decorations, cells):
+
+```bash
+npm test
+```
+
+Rust tests:
+
+```bash
+cd src-tauri && cargo test
+```
+
+Type-check and production build:
+
+```bash
+npm run build
+```
+
+Add `.folio/` to your book's `.gitignore`. It only holds cached cell outputs.

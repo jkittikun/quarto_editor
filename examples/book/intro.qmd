@@ -1,0 +1,42 @@
+---
+description: "What Folio renders live"
+author: "Jane Doe"
+---
+
+# Introduction {#sec-intro}
+
+This book shows what **Folio** can render live. See @knuth84 for literate
+programming, and @sec-methods for the methods. As shown in @fig-growth, things grow.
+
+::: {.callout-note}
+## A note on notation
+Inline math like $e^{i\pi} + 1 = 0$ renders instantly, and so does display math:
+
+$$
+\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
+$$ {#eq-gauss}
+:::
+
+Equation @eq-gauss is the Gaussian integral.
+
+![A growth curve](images/growth.svg){#fig-growth width=60%}
+
+::: {.callout-warning collapse="true"}
+## Watch out
+Callouts can be collapsible.
+:::
+
+| Model | Accuracy |
+|-------|---------:|
+| A     | 0.91     |
+| B     | 0.87     |
+
+: Model comparison {#tbl-models}
+
+::: {.panel-tabset}
+## Python
+Some Python notes.
+
+## R
+Some R notes.
+:::

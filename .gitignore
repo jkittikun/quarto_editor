@@ -1,0 +1,12 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+.DS_Store
+*.folio-tmp
+# Folio's per-project output cache and Quarto build output
+.folio/
+.quarto/
+_book/
+_freeze/
+__pycache__/

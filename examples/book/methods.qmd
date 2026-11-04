@@ -1,0 +1,31 @@
+# Methods {#sec-methods}
+
+We build on @sec-intro and @tbl-models [see also @knuth84; @xie2018].
+
+```{python}
+#| label: fig-sine
+#| fig-cap: "A sine wave"
+import numpy as np
+import matplotlib.pyplot as plt
+x = np.linspace(0, 2 * np.pi, 200)
+plt.plot(x, np.sin(x))
+plt.show()
+```
+
+```{python}
+import pandas as pd
+pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+```
+
+```{mermaid}
+flowchart LR
+  A[Write] --> B[Preview]
+  B --> C[Render]
+```
+
+::: {#thm-pythag}
+## Pythagoras
+For a right triangle, $a^2 + b^2 = c^2$.
+:::
+
+Theorem @thm-pythag is old. @fig-sine shows a sine.

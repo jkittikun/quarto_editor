@@ -1,0 +1,186 @@
+//! Folio native backend: file access scoped to opened projects, a file watcher,
+//! the Python kernel bridge and `quarto render`.
+
+mod kernel;
+mod project;
+mod render;
+
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use serde::Serialize;
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_opener::OpenerExt;
+
+#[derive(Default)]
+pub struct AppState {
+    roots: Mutex<Vec<PathBuf>>,
+    watchers: Mutex<Vec<notify::RecommendedWatcher>>,
+    kernel: Mutex<Option<kernel::Kernel>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CmdError(String);
+impl<E: std::fmt::Display> From<E> for CmdError {
+    fn from(e: E) -> Self {
+        CmdError(e.to_string())
+    }
+}
+type CmdResult<T> = Result<T, CmdError>;
+
+/// Resolve `path` and make sure it lives inside one of the opened project roots.
+fn checked(state: &AppState, path: &str) -> CmdResult<PathBuf> {
+    let p = PathBuf::from(path);
+    // For files that don't exist yet, canonicalize the closest existing ancestor.
+    let mut existing = p.clone();
+    let mut tail = Vec::new();
+    while !existing.exists() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_owned());
+                existing = parent.to_path_buf();
+            }
+            _ => return Err(CmdError(format!("invalid path: {path}"))),
+        }
+    }
+    let mut canon = existing.canonicalize()?;
+    for t in tail.iter().rev() {
+        if t == ".." {
+            return Err(CmdError(format!("invalid path: {path}")));
+        }
+        canon.push(t);
+    }
+    let roots = state.roots.lock().unwrap();
+    if roots.iter().any(|r| canon.starts_with(r)) {
+        Ok(canon)
+    } else {
+        Err(CmdError(format!("path is outside the opened project: {path}")))
+    }
+}
+
+#[tauri::command]
+fn open_project(app: AppHandle, state: State<'_, AppState>, root: String) -> CmdResult<Vec<String>> {
+    let root = Path::new(&root).canonicalize()?;
+    if !root.is_dir() {
+        return Err(CmdError(format!("not a folder: {}", root.display())));
+    }
+    {
+        let mut roots = state.roots.lock().unwrap();
+        if !roots.contains(&root) {
+            roots.push(root.clone());
+            app.asset_protocol_scope().allow_directory(&root, true)?;
+            let watcher = project::watch(app.clone(), root.clone())?;
+            state.watchers.lock().unwrap().push(watcher);
+        }
+    }
+    Ok(project::list_files(&root))
+}
+
+#[tauri::command]
+fn read_file(state: State<'_, AppState>, path: String) -> CmdResult<String> {
+    Ok(std::fs::read_to_string(checked(&state, &path)?)?)
+}
+
+#[tauri::command]
+fn write_file(state: State<'_, AppState>, path: String, content: String) -> CmdResult<()> {
+    let p = checked(&state, &path)?;
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // Atomic write: never leave a half-written chapter behind.
+    let tmp = p.with_extension(format!(
+        "{}.folio-tmp",
+        p.extension().and_then(|e| e.to_str()).unwrap_or("")
+    ));
+    std::fs::write(&tmp, content)?;
+    std::fs::rename(&tmp, &p)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn path_exists(state: State<'_, AppState>, path: String) -> CmdResult<bool> {
+    Ok(checked(&state, &path)?.exists())
+}
+
+#[tauri::command]
+fn kernel_send(app: AppHandle, state: State<'_, AppState>, msg: serde_json::Value) -> CmdResult<()> {
+    let mut msg = msg;
+    if let Some(cwd) = msg.get("cwd").and_then(|v| v.as_str()).map(str::to_owned) {
+        msg["cwd"] = serde_json::Value::String(checked(&state, &cwd)?.to_string_lossy().into_owned());
+    }
+    let op = msg.get("op").and_then(|v| v.as_str()).unwrap_or("");
+    let mut guard = state.kernel.lock().unwrap();
+    if op == "execute" {
+        let root = {
+            let cwd = msg.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+            let roots = state.roots.lock().unwrap();
+            roots.iter().find(|r| Path::new(cwd).starts_with(r)).cloned()
+        };
+        let alive = guard.as_mut().map(|k| k.alive()).unwrap_or(false);
+        if !alive {
+            *guard = Some(kernel::Kernel::spawn(&app, root.as_deref())?);
+        }
+    }
+    if let Some(k) = guard.as_mut() {
+        k.send(&msg)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn render(
+    app: AppHandle,
+    req: String,
+    root: String,
+    target: Option<String>,
+) -> CmdResult<render::RenderResult> {
+    let state = app.state::<AppState>();
+    let root = checked(&state, &root)?;
+    let target = match target {
+        Some(t) => Some(checked(&state, &t)?),
+        None => None,
+    };
+    let app2 = app.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || render::run(&app2, &req, &root, target.as_deref()))
+        .await
+        .map_err(|e| CmdError(e.to_string()))??;
+    Ok(res)
+}
+
+#[tauri::command]
+fn open_external(app: AppHandle, target: String) -> CmdResult<()> {
+    if target.starts_with("http://") || target.starts_with("https://") || target.starts_with("mailto:") {
+        app.opener().open_url(target, None::<&str>)?;
+    } else {
+        let state = app.state::<AppState>();
+        let p = checked(&state, &target)?;
+        app.opener().open_path(p.to_string_lossy(), None::<&str>)?;
+    }
+    Ok(())
+}
+
+pub fn run() {
+    project::fix_path_env();
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![
+            open_project,
+            read_file,
+            write_file,
+            path_exists,
+            kernel_send,
+            render,
+            open_external
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building Folio")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(mut k) = app.state::<AppState>().kernel.lock().unwrap().take() {
+                    k.shutdown();
+                }
+            }
+        });
+}

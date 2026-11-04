@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Folio</title>
+  </head>
+  <body>
+    <div id="welcome" hidden>
+      <div class="welcome-box">
+        <div class="logo">Folio</div>
+        <p>A live-preview editor for Quarto books.</p>
+        <button id="welcome-open" class="primary">Open a Quarto project…</button>
+        <p class="hint">Open the folder that contains <code>_quarto.yml</code>.</p>
+      </div>
+    </div>
+
+    <div id="app" hidden>
+      <aside id="sidebar">
+        <header>
+          <div id="book-title"></div>
+          <div id="book-author"></div>
+        </header>
+        <nav id="outline"></nav>
+        <footer>
+          <button id="open-folder" title="Open project (⌘O)">Open…</button>
+          <button id="quick-open" title="Go to file (⌘P)">Go to file ⌘P</button>
+        </footer>
+      </aside>
+
+      <main>
+        <div id="toolbar">
+          <button id="toggle-sidebar" class="icon" title="Toggle sidebar (⌘\)">☰</button>
+          <div id="crumb"></div>
+          <div class="spacer"></div>
+          <span id="kernel-status" data-state="idle" title="Jupyter kernel for this document">Python ● idle</span>
+          <button id="run-all" title="Run all Python cells">Run all</button>
+          <button id="kernel-interrupt" class="icon" title="Interrupt kernel">◼</button>
+          <button id="kernel-restart" class="icon" title="Restart kernel">↻</button>
+          <span class="sep"></span>
+          <button id="render-chapter" title="quarto render this chapter (⇧⌘R)">Render chapter</button>
+          <button id="render-book" title="quarto render the whole project">Render book</button>
+          <span class="sep"></span>
+          <button id="toggle-source" class="icon" title="Focus mode">◐</button>
+          <button id="toggle-theme" class="icon" title="Theme">☾</button>
+        </div>
+        <div id="editor"></div>
+        <section id="log-panel" hidden>
+          <header><span id="log-title">Render</span><button id="log-close" class="icon">✕</button></header>
+          <pre id="log"></pre>
+        </section>
+        <footer id="statusbar">
+          <span id="save-status">Saved</span>
+          <span class="spacer"></span>
+          <span id="word-count"></span>
+        </footer>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
