@@ -17,6 +17,19 @@ export interface RenderResult {
   output: string | null; // absolute path to the rendered output, if known
 }
 
+export interface PythonEnv {
+  path: string;
+  version: string | null; // null when the interpreter could not be run
+  label: string; // e.g. ".venv", "conda: base", "pyenv 3.12.3", "system"
+  source: "project" | "env" | "conda" | "pyenv" | "system" | "custom";
+  ready: boolean; // jupyter_client + ipykernel importable
+}
+
+export interface RenderOptions {
+  to?: string; // e.g. "pdf"
+  python?: string; // interpreter for QUARTO_PYTHON
+}
+
 export interface Backend {
   readonly kind: "tauri" | "http";
   /** Ask the user to choose a project folder. */
@@ -27,17 +40,21 @@ export interface Backend {
   openProject(root: string): Promise<string[]>;
   readFile(path: string): Promise<string>;
   writeFile(path: string, content: string): Promise<void>;
+  /** Move a file to the Trash (desktop) or `.folio/trash` (browser mode). */
+  deleteFile(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   /** URL that the webview can load for a local file (images, rendered HTML). */
   fileUrl(path: string): string;
   /** Subscribe to file changes under the opened project (absolute paths). */
   onFsChange(cb: (paths: string[]) => void): void;
 
-  kernelExecute(req: string, doc: string, cwd: string, code: string): Promise<void>;
+  kernelExecute(req: string, doc: string, cwd: string, code: string, python?: string): Promise<void>;
+  /** Detect Python interpreters (project venvs, conda, pyenv, system), plus `extra` paths to probe. */
+  listPythons(root: string, extra?: string[]): Promise<PythonEnv[]>;
   kernelControl(op: "interrupt" | "restart" | "shutdown", doc: string): Promise<void>;
   onKernelMsg(cb: (msg: KernelMsg) => void): void;
 
-  render(root: string, target: string | null, onLog: (line: string) => void): Promise<RenderResult>;
+  render(root: string, target: string | null, onLog: (line: string) => void, opts?: RenderOptions): Promise<RenderResult>;
   openExternal(pathOrUrl: string): Promise<void>;
 }
 

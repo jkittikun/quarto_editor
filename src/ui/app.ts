@@ -1,7 +1,7 @@
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { type Backend, type KernelMsg, joinPath, dirname, relativeTo } from "../backend/types";
-import { parseQuartoYml, bookOrder, insertChapter, type ProjectInfo } from "../core/project";
+import { type Backend, type KernelMsg, type PythonEnv, joinPath, dirname, relativeTo } from "../backend/types";
+import { parseQuartoYml, bookOrder, insertChapter, removeChapter, isInBook, type ProjectInfo } from "../core/project";
 import { projectTemplate, newDocument, type TemplateKind } from "../core/templates";
 import { parseFreeze, freezePath } from "../core/freeze";
 import { buildIndex, scanTargets, type XrefTarget, type HeadingNumber } from "../core/xref";
@@ -15,7 +15,7 @@ import {
 } from "../editor/cells";
 import { md } from "../editor/widgets";
 import { QuickOpen } from "./quickOpen";
-import { formModal, choiceModal } from "./modal";
+import { formModal, confirmModal, pickModal, type PickItem } from "./modal";
 import { $, h, debounce } from "./dom";
 
 const TEXT_EXT = /\.(qmd|md|markdown|Rmd|txt|yml|yaml|bib|py|R|css|scss|tex|json|lua)$/i;
@@ -69,13 +69,25 @@ export class App {
     this.docs.clear();
     this.docsText.clear();
     this.current = null;
+    this.reqToDoc.clear();
+    // Never show the previous folder's document while the new one loads.
+    ctx.file = "";
+    this.view.setState(EditorState.create({ doc: "" }));
+    $("#crumb").innerHTML = "";
+    $("#word-count").textContent = "";
     this.files = await this.backend.openProject(root);
-    if (!this.files.some((f) => /^_quarto\.ya?ml$/.test(f) || DOC_EXT.test(f))) {
-      await this.offerNewProject(root);
-    }
     await this.loadProjectConfig();
     $("#welcome").hidden = true;
     $("#app").hidden = false;
+    this.pythons = null;
+    this.updatePythonLabel();
+    this.refreshPythons(); // background detection of interpreters
+    if (!this.files.some((f) => /^_quarto\.ya?ml$/.test(f) || DOC_EXT.test(f))) {
+      this.renderSidebar();
+      this.showStartPanel(root);
+      return;
+    }
+    this.hideStartPanel();
     const order = this.info ? bookOrder(this.info).map((c) => c.file) : [];
     const last = localStorage.getItem(`folio.lastFile:${root}`);
     const first =
@@ -156,6 +168,7 @@ export class App {
     }
     this.current = doc;
     ctx.file = path;
+    this.hideStartPanel();
     localStorage.setItem(`folio.lastFile:${this.root}`, this.rel(path));
     this.view.setState(doc.state);
     this.applyPreviewMode();
@@ -256,28 +269,238 @@ export class App {
     await this.openFile(this.abs(rel));
   }
 
-  async offerNewProject(root: string) {
-    const choice = await choiceModal(
-      "This folder is empty",
-      "Create a new Quarto project here?",
-      [
-        { id: "book", label: "Book", description: "Chapters, cross-references and a bibliography (_quarto.yml + chapters)" },
-        { id: "presentation", label: "Presentation", description: "Reveal.js slides in slides.qmd" },
-        { id: "document", label: "Single document", description: "One document.qmd rendered to HTML" },
-        { id: "none", label: "Just open the folder" },
-      ],
-    );
-    if (!choice || choice === "none") return;
+  /** Empty folder: offer project templates inline in the content area. */
+  showStartPanel(root: string) {
+    const panel = $("#start-panel");
+    $("#editor").hidden = true;
+    panel.hidden = false;
+    panel.innerHTML = "";
     const name = root.split("/").pop() ?? "Untitled";
-    const res = await formModal("Project details", [
-      { name: "title", label: "Title", value: name.replace(/[-_]+/g, " ") },
-      { name: "author", label: "Author", value: localStorage.getItem("folio.author") ?? "" },
-    ]);
-    if (!res) return;
-    localStorage.setItem("folio.author", String(res.author));
-    const files = projectTemplate(choice as TemplateKind, String(res.title || name), String(res.author || ""));
-    for (const [rel, content] of Object.entries(files)) await this.backend.writeFile(joinPath(root, rel), content);
-    this.files = await this.backend.openProject(root);
+    const inner = h("div", { class: "start-inner" });
+    inner.appendChild(h("h1", {}, "Start a new Quarto project"));
+    inner.appendChild(h("p", { class: "start-sub" }, `“${name}” has no Quarto files yet. Choose what to create:`));
+    const cards = h("div", { class: "start-cards" });
+    const choices: { id: TemplateKind; title: string; text: string; icon: string }[] = [
+      { id: "book", title: "Book", text: "Chapters, parts, cross-references and a bibliography.", icon: "📖" },
+      { id: "presentation", title: "Presentation", text: "Reveal.js slides — each ## heading is a slide.", icon: "🖥" },
+      { id: "document", title: "Single document", text: "One document.qmd rendered to HTML or PDF.", icon: "📄" },
+    ];
+    for (const c of choices) {
+      const card = h("button", { class: "start-card", "data-choice": c.id });
+      card.append(h("span", { class: "start-icon" }, c.icon), h("b", {}, c.title), h("span", {}, c.text));
+      card.onclick = () => this.startProjectForm(root, c.id, c.title);
+      cards.appendChild(card);
+    }
+    inner.appendChild(cards);
+    const skip = h("button", { class: "start-skip" }, "Just open the folder");
+    skip.onclick = () => this.hideStartPanel();
+    inner.appendChild(skip);
+    panel.appendChild(inner);
+  }
+
+  startProjectForm(root: string, kind: TemplateKind, title: string) {
+    const panel = $("#start-panel");
+    const name = root.split("/").pop() ?? "Untitled";
+    panel.innerHTML = "";
+    const form = h("form", { class: "start-inner start-form" });
+    form.appendChild(h("h1", {}, `New ${title.toLowerCase()}`));
+    const t = h("input", { name: "title", type: "text", spellcheck: "false" });
+    t.value = name.replace(/[-_]+/g, " ");
+    const a = h("input", { name: "author", type: "text", spellcheck: "false" });
+    a.value = localStorage.getItem("folio.author") ?? "";
+    form.append(
+      h("label", { class: "modal-field" }, h("span", {}, "Title"), t),
+      h("label", { class: "modal-field" }, h("span", {}, "Author"), a),
+    );
+    const back = h("button", { type: "button" }, "Back");
+    back.onclick = () => this.showStartPanel(root);
+    form.appendChild(h("div", { class: "modal-actions" }, back, h("button", { type: "submit", class: "primary" }, "Create")));
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      localStorage.setItem("folio.author", a.value.trim());
+      const files = projectTemplate(kind, t.value.trim() || name, a.value.trim());
+      for (const [rel, content] of Object.entries(files)) await this.backend.writeFile(joinPath(root, rel), content);
+      await this.openProject(root);
+    };
+    panel.appendChild(form);
+    t.focus();
+    t.select();
+  }
+
+  hideStartPanel() {
+    $("#start-panel").hidden = true;
+    $("#editor").hidden = false;
+  }
+
+  // ---- deleting files ---------------------------------------------------------
+
+  async deleteFile(rel: string) {
+    const inBook = isInBook(this.info, rel);
+    const { ok, checked } = await confirmModal(
+      `Delete ${rel.split("/").pop()}?`,
+      this.backend.kind === "tauri"
+        ? `“${rel}” will be moved to the Trash.`
+        : `“${rel}” will be moved to .folio/trash in this project.`,
+      { confirm: "Move to Trash", danger: true, checkbox: inBook ? { label: "Also remove it from the book (_quarto.yml)", value: true } : undefined },
+    );
+    if (!ok) return;
+    const path = this.abs(rel);
+    if (this.current?.path === path) await this.flushSave(this.current);
+    try {
+      await this.backend.deleteFile(path);
+    } catch (e) {
+      this.setSaveStatus(`Could not delete ${rel}: ${e}`, true);
+      return;
+    }
+    if (inBook && checked) {
+      const ymlName = this.files.find((f) => /^_quarto\.ya?ml$/.test(f));
+      if (ymlName) {
+        const yml = await this.backend.readFile(this.abs(ymlName));
+        const updated = removeChapter(yml, rel);
+        if (updated !== yml) await this.backend.writeFile(this.abs(ymlName), updated);
+      }
+    }
+    const doc = this.docs.get(path);
+    if (doc) this.docs.delete(path);
+    this.docsText.delete(rel);
+    const cache = joinPath(this.root, ".folio/cache", rel + ".json");
+    if (await this.backend.exists(cache).catch(() => false)) await this.backend.deleteFile(cache).catch(() => {});
+    this.files = await this.backend.openProject(this.root);
+    await this.loadProjectConfig();
+    this.setSaveStatus(`Deleted ${rel}`);
+    if (this.current?.path === path) {
+      this.current = null;
+      ctx.file = "";
+      const order = this.info ? bookOrder(this.info).map((c) => c.file) : [];
+      const next = order.find((f) => this.files.includes(f)) ?? this.files.find((f) => DOC_EXT.test(f));
+      if (next) await this.openFile(this.abs(next));
+      else {
+        this.view.setState(EditorState.create({ doc: "" }));
+        this.renderSidebar();
+      }
+    }
+  }
+
+  showFileMenu(rel: string, x: number, y: number) {
+    document.querySelector(".ctx-menu")?.remove();
+    const menu = h("div", { class: "ctx-menu" });
+    const item = (label: string, fn: () => void, cls = "") => {
+      const b = h("button", { class: cls }, label);
+      b.onclick = () => {
+        menu.remove();
+        fn();
+      };
+      menu.appendChild(b);
+    };
+    item("Open", () => this.openFile(this.abs(rel)));
+    item("Delete…", () => this.deleteFile(rel), "danger-text");
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    document.body.appendChild(menu);
+    setTimeout(() => document.addEventListener("mousedown", (e) => !menu.contains(e.target as Node) && menu.remove(), { once: true }));
+  }
+
+  // ---- Python interpreter ------------------------------------------------------
+
+  pythons: PythonEnv[] | null = null;
+
+  /** The interpreter chosen for this project (or null = auto-detect, like before). */
+  selectedPython(): string | null {
+    return localStorage.getItem(`folio.python:${this.root}`);
+  }
+
+  /** The interpreter that will actually be used: user choice, else the first detected. */
+  effectivePython(): PythonEnv | null {
+    const sel = this.selectedPython();
+    const list = this.pythons ?? [];
+    return (sel && list.find((p) => p.path === sel)) || (sel ? { path: sel, label: "custom", source: "custom", version: null, ready: false } : list[0] ?? null);
+  }
+
+  async refreshPythons() {
+    const root = this.root;
+    try {
+      const sel = this.selectedPython();
+      const list = await this.backend.listPythons(root, sel ? [sel] : []);
+      if (root !== this.root) return;
+      this.pythons = list;
+    } catch {
+      this.pythons = [];
+    }
+    this.updatePythonLabel();
+  }
+
+  updatePythonLabel() {
+    const env = this.effectivePython();
+    const label = $("#python-label");
+    if (!this.pythons) label.textContent = "Python …";
+    else if (!env) label.textContent = "No Python found";
+    else label.textContent = `Python ${env.version ?? ""}${env.source === "project" || env.source === "conda" || env.source === "pyenv" ? ` (${env.label})` : ""}`.replace("  ", " ");
+    $("#python-env").title = env ? `${env.path}${env.ready ? "" : "\n⚠ jupyter_client / ipykernel not installed"}\nClick to choose another interpreter` : "Choose a Python interpreter";
+    $("#python-env").classList.toggle("warn", !!env && !env.ready);
+  }
+
+  async pickPython(): Promise<void> {
+    if (!this.pythons) await this.refreshPythons();
+    const current = this.effectivePython()?.path;
+    const groups: Record<string, string> = { project: "This project", env: "Configured", conda: "Conda", pyenv: "pyenv", system: "System", custom: "Custom" };
+    const items: PickItem[] = (this.pythons ?? []).map((p) => ({
+      id: p.path,
+      label: `Python ${p.version ?? "?"}  ${p.label}`,
+      detail: p.path,
+      group: groups[p.source],
+      badge: p.ready ? undefined : "needs ipykernel",
+      selected: p.path === current,
+    }));
+    items.push({ id: "__path", label: "Enter interpreter path…", group: "More" }, { id: "__refresh", label: "Refresh list", group: "More" });
+    const choice = await pickModal("Select Python interpreter", items, "Filter interpreters…");
+    if (!choice) return;
+    if (choice === "__refresh") {
+      this.pythons = null;
+      this.updatePythonLabel();
+      await this.refreshPythons();
+      return this.pickPython();
+    }
+    let path = choice;
+    if (choice === "__path") {
+      const res = await formModal("Python interpreter", [{ name: "path", label: "Path to python", placeholder: "/path/to/venv/bin/python" }], "Use");
+      if (!res || !res.path) return;
+      path = String(res.path);
+    }
+    localStorage.setItem(`folio.python:${this.root}`, path);
+    await this.refreshPythons();
+    const env = this.effectivePython();
+    if (env && !env.version) this.setSaveStatus(`Couldn't run ${path}`, true);
+    else if (env && !env.ready) this.setSaveStatus(`Python selected. To run cells, install: ${path} -m pip install jupyter_client ipykernel`, true);
+    else this.setSaveStatus(`Using ${env?.label} (${path})`);
+  }
+
+  // ---- sidebar resizing --------------------------------------------------------
+
+  wireResizer() {
+    const handle = $("#sidebar-resizer");
+    const sidebar = $("#sidebar");
+    handle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      const startX = e.clientX;
+      const startW = sidebar.getBoundingClientRect().width;
+      document.body.classList.add("resizing");
+      const move = (ev: PointerEvent) => {
+        sidebar.style.width = `${Math.min(520, Math.max(180, startW + ev.clientX - startX))}px`;
+      };
+      const up = () => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", up);
+        document.body.classList.remove("resizing");
+        this.view.requestMeasure();
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", up);
+    });
+    handle.addEventListener("dblclick", () => {
+      sidebar.style.width = "";
+      this.view.requestMeasure();
+    });
   }
 
   revealLine(line: number) {
@@ -385,7 +608,7 @@ export class App {
     this.reqToDoc.set(req, doc.path);
     view.dispatch({ effects: setCellEffect.of({ pos: cell.pos, value: { outputs: [], running: true, req, hash: hashCode(cell.code) } }) });
     this.setKernel("busy");
-    this.backend.kernelExecute(req, doc.path, dirname(doc.path), cell.code).catch((e) => {
+    this.backend.kernelExecute(req, doc.path, dirname(doc.path), cell.code, this.effectivePython()?.path).catch((e) => {
       this.onKernelMsg({ req, type: "done", ok: false, error: String(e) });
     });
   }
@@ -474,8 +697,7 @@ export class App {
     this.kernelState = state;
     const el = $("#kernel-status");
     el.dataset.state = state;
-    el.textContent = { idle: "Python ● idle", busy: "Python ● running", starting: "Python ● starting", error: "Python ● error" }[state] ?? state;
-    el.title = error ?? "Jupyter kernel for this document";
+    el.title = error ?? `Kernel ${state}`;
     if (error) this.setSaveStatus(error, true);
   }
 
@@ -483,7 +705,14 @@ export class App {
   // Rendering with quarto
   // -------------------------------------------------------------------------
 
-  async render(whole: boolean) {
+  async exportPdf() {
+    if (!this.root) return;
+    const book = this.info?.type === "book";
+    if (!book && !this.current) return this.setSaveStatus("Open a document to export", true);
+    return this.render(book, { to: "pdf" });
+  }
+
+  async render(whole: boolean, opts: { to?: string } = {}) {
     if (!this.root) return;
     if (this.current) await this.flushSave(this.current);
     const log = $("#log");
@@ -491,12 +720,23 @@ export class App {
     panel.hidden = false;
     log.textContent = "";
     const target = whole || !this.current ? null : this.current.path;
-    $("#log-title").textContent = target ? `Rendering ${this.rel(target)}…` : "Rendering project…";
-    const res = await this.backend.render(this.root, target, (line) => {
-      log.textContent += line + "\n";
+    const what = opts.to === "pdf" ? "Exporting PDF" : "Rendering";
+    $("#log-title").textContent = target ? `${what}: ${this.rel(target)}…` : `${what}: whole project…`;
+    const res = await this.backend.render(
+      this.root,
+      target,
+      (line) => {
+        log.textContent += line + "\n";
+        log.scrollTop = log.scrollHeight;
+      },
+      { to: opts.to, python: this.effectivePython()?.path },
+    );
+    const done = opts.to === "pdf" ? "PDF exported" : "Render complete";
+    $("#log-title").textContent = res.ok ? done : `${what} failed${res.code !== null ? ` (exit ${res.code})` : ""}`;
+    if (!res.ok && opts.to === "pdf" && /tex|tlmgr|xelatex|pdflatex|lualatex/i.test(log.textContent ?? "")) {
+      log.textContent += "\nHint: PDF export needs a LaTeX installation. Install one with:  quarto install tinytex\n";
       log.scrollTop = log.scrollHeight;
-    });
-    $("#log-title").textContent = res.ok ? "Render complete" : `Render failed${res.code !== null ? ` (exit ${res.code})` : ""}`;
+    }
     if (res.ok) {
       let out = res.output;
       if (!out && this.info?.outputDir && target) {
@@ -543,6 +783,9 @@ export class App {
     $("#render-chapter").onclick = () => this.render(false);
     $("#render-book").onclick = () => this.render(true);
     $("#run-all").onclick = () => this.runAll();
+    $("#export-pdf").onclick = () => this.exportPdf();
+    $("#python-env").onclick = () => this.pickPython();
+    this.wireResizer();
     $("#run-above").onclick = () => this.runAll(true);
     $("#new-file").onclick = () => this.newFile();
     $("#edit-config").onclick = () => {
@@ -641,7 +884,20 @@ export class App {
         e.preventDefault();
         if (this.files.includes(file)) this.openFile(this.abs(file));
       };
-      const li = h("li", {}, a);
+      a.oncontextmenu = (e) => {
+        e.preventDefault();
+        if (this.files.includes(file)) this.showFileMenu(file, e.clientX, e.clientY);
+      };
+      const li = h("li", { class: "file-row" }, a);
+      if (this.files.includes(file)) {
+        const del = h("button", { class: "row-delete", title: `Delete ${file}…`, "aria-label": `Delete ${file}` }, "🗑");
+        del.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.deleteFile(file);
+        };
+        li.appendChild(del);
+      }
       if (file === currentRel) li.appendChild(h("ul", { id: "toc", class: "toc" }));
       return li;
     };

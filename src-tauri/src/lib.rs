@@ -116,9 +116,17 @@ fn kernel_send(app: AppHandle, state: State<'_, AppState>, msg: serde_json::Valu
             let roots = state.roots.lock().unwrap();
             roots.iter().find(|r| Path::new(cwd).starts_with(r)).cloned()
         };
-        let alive = guard.as_mut().map(|k| k.alive()).unwrap_or(false);
-        if !alive {
-            *guard = Some(kernel::Kernel::spawn(&app, root.as_deref())?);
+        let python = msg.get("python").and_then(|v| v.as_str()).filter(|p| !p.is_empty()).map(str::to_owned);
+        if let Some(p) = &python {
+            project::check_python(p)?;
+        }
+        let wanted = python.clone().unwrap_or_else(|| project::find_python(root.as_deref()));
+        let reuse = guard.as_mut().map(|k| k.alive() && k.python == wanted).unwrap_or(false);
+        if !reuse {
+            if let Some(mut old) = guard.take() {
+                old.shutdown();
+            }
+            *guard = Some(kernel::Kernel::spawn(&app, root.as_deref(), Some(&wanted))?);
         }
     }
     if let Some(k) = guard.as_mut() {
@@ -133,6 +141,8 @@ async fn render(
     req: String,
     root: String,
     target: Option<String>,
+    to: Option<String>,
+    python: Option<String>,
 ) -> CmdResult<render::RenderResult> {
     let state = app.state::<AppState>();
     let root = checked(&state, &root)?;
@@ -140,11 +150,38 @@ async fn render(
         Some(t) => Some(checked(&state, &t)?),
         None => None,
     };
+    if let Some(p) = &python {
+        project::check_python(p)?;
+    }
     let app2 = app.clone();
-    let res = tauri::async_runtime::spawn_blocking(move || render::run(&app2, &req, &root, target.as_deref()))
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        render::run(&app2, &req, &root, target.as_deref(), to.as_deref(), python.as_deref())
+    })
         .await
         .map_err(|e| CmdError(e.to_string()))??;
     Ok(res)
+}
+
+/// Move a project file to the system Trash (recoverable).
+#[tauri::command]
+fn delete_file(state: State<'_, AppState>, path: String) -> CmdResult<()> {
+    let p = checked(&state, &path)?;
+    if !p.is_file() {
+        return Err(CmdError(format!("not a file: {path}")));
+    }
+    trash::delete(&p)?;
+    Ok(())
+}
+
+/// Detect Python interpreters for the project (venvs, conda, pyenv, system) and probe them.
+#[tauri::command]
+async fn list_pythons(app: AppHandle, root: String, extra: Vec<String>) -> CmdResult<Vec<project::PythonEnv>> {
+    let state = app.state::<AppState>();
+    let root = checked(&state, &root)?;
+    let list = tauri::async_runtime::spawn_blocking(move || project::list_pythons(&root, &extra))
+        .await
+        .map_err(|e| CmdError(e.to_string()))?;
+    Ok(list)
 }
 
 #[tauri::command]
@@ -172,7 +209,9 @@ pub fn run() {
             path_exists,
             kernel_send,
             render,
-            open_external
+            open_external,
+            delete_file,
+            list_pythons
         ])
         .build(tauri::generate_context!())
         .expect("error while building Folio")

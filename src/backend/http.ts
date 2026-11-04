@@ -1,4 +1,4 @@
-import type { Backend, KernelMsg, RenderResult } from "./types";
+import type { Backend, KernelMsg, RenderResult, PythonEnv, RenderOptions } from "./types";
 
 /** Backend used when running in a normal browser against the Vite dev server (`npm run dev`). */
 export class HttpBackend implements Backend {
@@ -50,6 +50,12 @@ export class HttpBackend implements Backend {
   async writeFile(path: string, content: string) {
     await this.api("/api/write", { path, content });
   }
+  async deleteFile(path: string) {
+    await this.api("/api/delete", { path });
+  }
+  async listPythons(root: string, extra: string[] = []) {
+    return (await this.api("/api/pythons", { root, extra })).pythons as PythonEnv[];
+  }
   async exists(path: string) {
     return (await this.api("/api/exists", { path })).exists as boolean;
   }
@@ -59,8 +65,8 @@ export class HttpBackend implements Backend {
   onFsChange(cb: (paths: string[]) => void) {
     this.fsCbs.push(cb);
   }
-  async kernelExecute(req: string, doc: string, cwd: string, code: string) {
-    await this.api("/api/kernel", { op: "execute", req, doc, cwd, code });
+  async kernelExecute(req: string, doc: string, cwd: string, code: string, python?: string) {
+    await this.api("/api/kernel", { op: "execute", req, doc, cwd, code, python });
   }
   async kernelControl(op: "interrupt" | "restart" | "shutdown", doc: string) {
     await this.api("/api/kernel", { op, doc, req: "ctl-" + Date.now() });
@@ -68,7 +74,7 @@ export class HttpBackend implements Backend {
   onKernelMsg(cb: (m: KernelMsg) => void) {
     this.kernelCbs.push(cb);
   }
-  render(root: string, target: string | null, onLog: (line: string) => void): Promise<RenderResult> {
+  render(root: string, target: string | null, onLog: (line: string) => void, opts: RenderOptions = {}): Promise<RenderResult> {
     const req = "r" + Math.random().toString(36).slice(2);
     return new Promise((resolve, reject) => {
       this.renderCbs.set(req, (ev) => {
@@ -78,7 +84,7 @@ export class HttpBackend implements Backend {
           resolve(ev.result);
         }
       });
-      this.api("/api/render", { req, root, target }).catch((e) => {
+      this.api("/api/render", { req, root, target, ...opts }).catch((e) => {
         this.renderCbs.delete(req);
         reject(e);
       });

@@ -12,9 +12,15 @@ for i in $(seq 1 30); do
   rm -rf ".quarto/tmp$i" "intro_files/tmp$i"
 done
 rm -rf intro_files
+echo "fake quarto args: $*"
 mkdir -p _book
-echo "<html><body>fake render</body></html>" > _book/intro.html
-echo "[1/1] intro.qmd"
-echo "Output created: _book/intro.html"
+if [[ " $* " == *" --to pdf "* ]]; then
+  echo "%PDF-1.4 fake" > _book/book.pdf
+  echo "Output created: _book/book.pdf"
+else
+  echo "<html><body>fake render</body></html>" > _book/intro.html
+  echo "[1/1] intro.qmd"
+  echo "Output created: _book/intro.html"
+fi
 sleep 30 &
 exit 0

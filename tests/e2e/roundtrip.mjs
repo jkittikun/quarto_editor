@@ -165,14 +165,73 @@ try {
   ok(await waitFor(() => page.locator("#outline a.chapter", { hasText: "Fresh Chapter" }).count().then((n) => n === 1)), "sidebar shows the new chapter");
 
   // ---------------------------------------------------------------- 4. empty folder
-  page.evaluate((dir) => folio.openProject(dir), empty);
-  await page.waitForSelector(".modal-choice[data-choice=book]");
+  await page.evaluate((dir) => folio.openProject(dir), empty);
+  await page.waitForSelector("#start-panel [data-choice=book]");
+  ok(await page.locator("#editor").isHidden(), "empty folder hides the previous document");
+  ok((await page.locator("#outline").innerText()).trim() === "", "empty folder shows an empty sidebar");
+  ok((await page.locator("#start-panel [data-choice]").count()) === 3, "empty folder offers 3 project types in the content area");
   await shot("empty-folder");
-  await page.click(".modal-choice[data-choice=book]");
-  await page.fill(".modal input[name=title]", "Empty Test Book");
-  await page.click(".modal button[type=submit]");
+  await page.click("#start-panel [data-choice=book]");
+  await page.fill("#start-panel input[name=title]", "Empty Test Book");
+  await page.click("#start-panel button[type=submit]");
   ok(await waitFor(() => existsSync(join(empty, "_quarto.yml")) && existsSync(join(empty, "intro.qmd"))), "empty folder → book project created");
   ok(await waitFor(() => page.locator("#book-title").innerText().then((t) => t.includes("Empty Test Book"))), "new book opens in the app");
+
+  // ---------------------------------------------------------------- 4b. layout: centered, footer, resizer
+  await page.evaluate((dir) => folio.openProject(dir), book);
+  await waitFor(() => page.evaluate(() => !!folio.current));
+  await page.evaluate(() => folio.openFile(folio.abs("intro.qmd")));
+  await sleep(300);
+  const pane = await page.locator("#editor").boundingBox();
+  const content = await page.locator(".cm-content").boundingBox();
+  const off = Math.abs(content.x + content.width / 2 - (pane.x + pane.width / 2));
+  ok(off < 3, `content column is centered in the editor pane (off by ${off.toFixed(1)} px)`);
+  const inFooter = await page.evaluate(() =>
+    ["#python-env", "#run-above", "#run-all", "#kernel-interrupt", "#kernel-restart", "#render-chapter", "#render-book"].every(
+      (sel) => document.querySelector(sel)?.closest("#statusbar"),
+    ),
+  );
+  ok(inFooter, "kernel and render controls are in the bottom bar");
+  const pyH = await page.evaluate(() => document.querySelector("#python-env").getBoundingClientRect().height);
+  const barH = await page.evaluate(() => document.querySelector("#statusbar").getBoundingClientRect().height);
+  ok(pyH < 24 && barH < 30, `Python status fits on one line (button ${pyH}px, bar ${barH}px)`);
+  const w0 = (await page.locator("#sidebar").boundingBox()).width;
+  const rz = await page.locator("#sidebar-resizer").boundingBox();
+  await page.mouse.move(rz.x + 2, rz.y + 100);
+  await page.mouse.down();
+  await page.mouse.move(rz.x + 122, rz.y + 100, { steps: 5 });
+  await page.mouse.up();
+  const w1 = (await page.locator("#sidebar").boundingBox()).width;
+  ok(Math.abs(w1 - w0 - 120) < 4, `sidebar can be dragged wider (${w0} → ${w1})`);
+  await page.reload();
+  await waitFor(() => page.evaluate(() => !!window.folio?.current));
+  ok(Math.abs((await page.locator("#sidebar").boundingBox()).width - w0) < 2, "sidebar width is not remembered after reopening");
+  await shot("layout");
+
+  // ---------------------------------------------------------------- 4c. python picker
+  ok(await waitFor(() => page.locator("#python-label").innerText().then((t) => /Python \d/.test(t)), 20000), "footer shows the detected Python version");
+  await page.click("#python-env");
+  await page.waitForSelector(".pick-item");
+  const nPy = await page.locator(".pick-item").count();
+  ok(nPy >= 3, `interpreter picker lists interpreters (${nPy - 2} found)`);
+  await shot("python-picker");
+  const firstPy = await page.locator(".pick-item").first().getAttribute("data-id");
+  await page.locator(".pick-item").first().dispatchEvent("mousedown");
+  ok(await page.evaluate((root) => localStorage.getItem(`folio.python:${root}`), book) === firstPy, "chosen interpreter is remembered for the project");
+
+  // ---------------------------------------------------------------- 4d. delete a chapter
+  const ymlBeforeDelete = readFileSync(join(book, "_quarto.yml"), "utf8");
+  await page.locator("#outline li.file-row", { hasText: "Fresh Chapter" }).hover();
+  await page.locator("#outline li.file-row", { hasText: "Fresh Chapter" }).locator(".row-delete").click();
+  await page.waitForSelector(".modal-box [data-confirm]");
+  ok(await page.locator(".modal-box input[name=confirm-check]").isChecked(), "delete dialog offers removing the chapter from _quarto.yml");
+  await shot("delete-confirm");
+  await page.click(".modal-box [data-confirm]");
+  ok(await waitFor(() => !existsSync(join(book, "fresh.qmd"))), "deleted file is gone from the project");
+  ok(existsSync(join(book, ".folio/trash")) || process.env.FOLIO_BACKEND === "tauri", "deleted file was moved to .folio/trash (recoverable)");
+  await waitFor(() => readFileSync(join(book, "_quarto.yml"), "utf8") !== ymlBeforeDelete);
+  ok(readFileSync(join(book, "_quarto.yml"), "utf8") === ymlBeforeDelete.replace("        - fresh.qmd\n", ""), "_quarto.yml lost exactly that one line");
+  ok(await waitFor(() => page.locator("#outline a.chapter", { hasText: "Fresh Chapter" }).count().then((n) => n === 0)), "sidebar no longer lists the deleted chapter");
 
   // ---------------------------------------------------------------- 5. quarto render
   if (hasQuarto) {
@@ -190,6 +249,13 @@ try {
       try {
         console.log(execSync("ps -ef --forest | grep -i -E 'quarto|deno|pandoc|python|sass|esbuild' | grep -v grep", { encoding: "utf8" }));
       } catch {}
+    }
+    if (FAKE_QUARTO) {
+      await page.click("#export-pdf");
+      const pdfDone = await waitFor(() => page.locator("#log-title").innerText().then((t) => /PDF exported|failed/.test(t)), 15000, 250);
+      ok(pdfDone && (await page.locator("#log-title").innerText()) === "PDF exported", "Export PDF runs quarto render --to pdf");
+      ok((await page.locator("#log").innerText()).includes("fake quarto args: render --to pdf"), "whole book exported with --to pdf");
+      ok(existsSync(join(book, "_book/book.pdf")), "_book/book.pdf exists");
     }
   } else {
     console.log("- quarto not on PATH: skipping render test");

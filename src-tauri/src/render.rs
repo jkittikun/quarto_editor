@@ -32,13 +32,26 @@ pub fn parse_output_line(line: &str) -> Option<&str> {
 }
 
 /// Run `quarto render` from the Tauri command, streaming lines as `render-log` events.
-pub fn run(app: &AppHandle, req: &str, root: &Path, target: Option<&Path>) -> Result<RenderResult, String> {
+pub fn run(
+    app: &AppHandle,
+    req: &str,
+    root: &Path,
+    target: Option<&Path>,
+    to: Option<&str>,
+    python: Option<&str>,
+) -> Result<RenderResult, String> {
     let app = app.clone();
     let req_owned = req.to_owned();
     let emit = move |line: String| {
         let _ = app.emit("render-log", LogLine { req: &req_owned, line });
     };
-    run_with(&quarto_bin(), root, target, emit)
+    let mut extra: Vec<String> = Vec::new();
+    if let Some(to) = to {
+        extra.push("--to".into());
+        extra.push(to.into());
+    }
+    let python = python.map(str::to_owned).unwrap_or_else(|| crate::project::find_python(Some(root)));
+    run_with(&quarto_bin(), root, target, &extra, &python, emit)
 }
 
 /// Run `<quarto> render [target]` in `root`, sending each output line to `emit`.
@@ -50,6 +63,8 @@ pub fn run_with(
     quarto: &str,
     root: &Path,
     target: Option<&Path>,
+    extra_args: &[String],
+    python: &str,
     emit: impl Fn(String) + Send + Sync + 'static,
 ) -> Result<RenderResult, String> {
     let emit = Arc::new(emit);
@@ -58,8 +73,9 @@ pub fn run_with(
     if let Some(t) = target {
         cmd.arg(t);
     }
+    cmd.args(extra_args);
     cmd.current_dir(root)
-        .env("QUARTO_PYTHON", crate::project::find_python(Some(root)))
+        .env("QUARTO_PYTHON", python)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -133,7 +149,7 @@ mod tests {
         let lines = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = lines.clone();
         let t0 = Instant::now();
-        let res = run_with(script.to_str().unwrap(), &dir, None, move |l| sink.lock().unwrap().push(l)).unwrap();
+        let res = run_with(script.to_str().unwrap(), &dir, None, &[], "python3", move |l| sink.lock().unwrap().push(l)).unwrap();
         assert!(t0.elapsed() < Duration::from_secs(3), "render took {:?}", t0.elapsed());
         assert!(res.ok);
         assert_eq!(res.output.as_deref(), Some(dir.join("_book/intro.html").to_str().unwrap()));
@@ -141,9 +157,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn passes_extra_args_for_pdf_export() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/e2e/fake-quarto.sh");
+        let dir = std::env::temp_dir().join(format!("folio-pdf-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let args = vec!["--to".to_string(), "pdf".to_string()];
+        let res = run_with(script.to_str().unwrap(), &dir, None, &args, "python3", |_| {}).unwrap();
+        assert!(res.ok);
+        assert_eq!(res.output.as_deref(), Some(dir.join("_book/book.pdf").to_str().unwrap()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn reports_missing_quarto() {
-        let res = run_with("/nonexistent/quarto", Path::new("."), None, |_| {}).unwrap();
+        let res = run_with("/nonexistent/quarto", Path::new("."), None, &[], "python3", |_| {}).unwrap();
         assert!(!res.ok);
         assert_eq!(res.code, None);
     }

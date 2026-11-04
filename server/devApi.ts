@@ -5,7 +5,9 @@
  */
 import type { Plugin } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execFile, type ChildProcess } from "node:child_process";
+import os from "node:os";
+import { pythonCandidates, PROBE, parseProbe } from "../src/core/python";
 import { createInterface } from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
@@ -101,6 +103,55 @@ export function watchTree(root: string, onChange: (absPath: string) => void): { 
   };
 }
 
+/** Only allow interpreters that are `python3` on PATH or an existing file. */
+function checkPython(p: string): string {
+  if (p === "python3" || p === "python") return p;
+  if (!path.isAbsolute(p) || !fs.existsSync(p) || fs.statSync(p).isDirectory()) throw Object.assign(new Error(`Not a Python interpreter: ${p}`), { status: 400 });
+  return p;
+}
+
+function probePython(p: string): Promise<{ version: string; ready: boolean } | null> {
+  return new Promise((resolve) => {
+    execFile(p, ["-c", PROBE], { timeout: 4000 }, (err, stdout) => resolve(err ? null : parseProbe(String(stdout))));
+  });
+}
+
+export async function listPythons(root: string, extra: string[] = []) {
+  const home = os.homedir();
+  const list = (d: string) => {
+    try {
+      return fs.readdirSync(d);
+    } catch {
+      return [];
+    }
+  };
+  let condaEnvs: string[] = [];
+  try {
+    condaEnvs = fs.readFileSync(path.join(home, ".conda", "environments.txt"), "utf8").split("\n");
+  } catch {
+    /* no conda */
+  }
+  const cands = pythonCandidates({ root, home, env: process.env, list, exists: (p) => fs.existsSync(p), condaEnvs });
+  for (const e of extra) if (e && !cands.some((c) => c.path === e)) cands.push({ path: e, label: "custom", source: "custom" });
+  // de-duplicate by real path (symlinked venvs and system pythons often coincide)
+  const seen = new Set<string>();
+  const unique = cands.filter((c) => {
+    let real = c.path;
+    try {
+      real = fs.realpathSync(c.path);
+    } catch {
+      /* python3 on PATH */
+    }
+    if (seen.has(real)) return false;
+    seen.add(real);
+    return true;
+  });
+  const probed = await Promise.all(unique.map(async (c) => ({ ...c, probe: await probePython(c.path) })));
+  return probed
+    .filter((c) => c.probe || c.source === "custom")
+    .map((c) => ({ path: c.path, label: c.label, source: c.source, version: c.probe?.version ?? null, ready: c.probe?.ready ?? false }));
+}
+
 export function findPython(root: string): string {
   if (process.env.FOLIO_PYTHON) return process.env.FOLIO_PYTHON;
   if (process.env.QUARTO_PYTHON) return process.env.QUARTO_PYTHON;
@@ -138,11 +189,13 @@ export function folioApi(opts: { defaultRoot?: string; kernelScript: string }): 
     res.end(JSON.stringify(v));
   };
 
-  const ensureKernel = (root: string) => {
-    if (kernel && kernel.exitCode === null && kernelRoot === root) return kernel;
+  let kernelPython = "";
+  const ensureKernel = (root: string, python?: string) => {
+    const py = python || findPython(root);
+    if (kernel && kernel.exitCode === null && kernelRoot === root && kernelPython === py) return kernel;
     kernel?.kill();
     kernelRoot = root;
-    const py = findPython(root);
+    kernelPython = py;
     kernel = spawn(py, [opts.kernelScript], { stdio: ["pipe", "pipe", "pipe"] });
     createInterface({ input: kernel.stdout! }).on("line", (line) => {
       try { send("kernel", JSON.parse(line)); } catch { /* ignore */ }
@@ -220,18 +273,33 @@ export function folioApi(opts: { defaultRoot?: string; kernelScript: string }): 
               const msg = await body(req);
               const cwd = msg.cwd ? allowed(msg.cwd) : undefined;
               const root = [...roots].find((r) => (cwd ?? "").startsWith(r)) ?? kernelRoot;
-              if (msg.op === "execute") ensureKernel(root);
+              if (msg.op === "execute") ensureKernel(root, msg.python ? checkPython(msg.python) : undefined);
               if (kernel && kernel.exitCode === null) kernel.stdin!.write(JSON.stringify({ ...msg, cwd }) + "\n");
               return json(res, { ok: true });
             }
+            case "/api/delete": {
+              const { path: p } = await body(req);
+              const abs = allowed(p);
+              const root = [...roots].find((r) => abs.startsWith(r + path.sep))!;
+              if (!fs.statSync(abs).isFile()) throw new Error("Only files can be deleted");
+              // Recoverable: move into <root>/.folio/trash instead of unlinking.
+              const trash = path.join(root, ".folio", "trash");
+              fs.mkdirSync(trash, { recursive: true });
+              fs.renameSync(abs, path.join(trash, `${Date.now()}-${path.basename(abs)}`));
+              return json(res, { ok: true });
+            }
+            case "/api/pythons": {
+              const { root, extra } = await body(req);
+              return json(res, { pythons: await listPythons(allowed(root), Array.isArray(extra) ? extra.map(String) : []) });
+            }
             case "/api/render": {
-              const { req: id, root, target } = await body(req);
+              const { req: id, root, target, to, python } = await body(req);
               const cwd = allowed(root);
-              const args = ["render", ...(target ? [allowed(target)] : [])];
+              const args = ["render", ...(target ? [allowed(target)] : []), ...(to ? ["--to", String(to)] : [])];
               // stdin must be closed: quarto can block waiting on an open stdin pipe and never exit.
               const child = spawn(process.env.QUARTO_PATH ?? "quarto", args, {
                 cwd,
-                env: { ...process.env, QUARTO_PYTHON: findPython(cwd) },
+                env: { ...process.env, QUARTO_PYTHON: python ? checkPython(python) : findPython(cwd) },
                 stdio: ["ignore", "pipe", "pipe"],
               });
               let output: string | null = null;

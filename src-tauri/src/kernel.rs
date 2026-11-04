@@ -12,16 +12,17 @@ const SCRIPT: &str = include_str!("../../kernel/folio_kernel.py");
 pub struct Kernel {
     child: Child,
     stdin: ChildStdin,
+    pub python: String,
 }
 
 impl Kernel {
-    pub fn spawn(app: &AppHandle, root: Option<&Path>) -> Result<Self, String> {
+    pub fn spawn(app: &AppHandle, root: Option<&Path>, python: Option<&str>) -> Result<Self, String> {
         let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let script = dir.join("folio_kernel.py");
         std::fs::write(&script, SCRIPT).map_err(|e| e.to_string())?;
 
-        let python = crate::project::find_python(root);
+        let python = python.map(str::to_owned).unwrap_or_else(|| crate::project::find_python(root));
         let mut child = Command::new(&python)
             .arg(&script)
             .stdin(Stdio::piped())
@@ -39,7 +40,7 @@ impl Kernel {
                 }
             }
         });
-        Ok(Kernel { child, stdin })
+        Ok(Kernel { child, stdin, python })
     }
 
     pub fn alive(&mut self) -> bool {

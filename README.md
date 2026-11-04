@@ -96,11 +96,12 @@ Without `FOLIO_ROOT`, it opens the sample book in `examples/book`.
 
 ## Python environment
 
-Folio looks for the Python that runs your cells in this order:
-1. `FOLIO_PYTHON`
-2. `QUARTO_PYTHON`
-3. `.venv/bin/python`, `venv/bin/python` or `env/bin/python` in the project
-4. `python3`
+Click the Python version in the bottom bar to choose an interpreter. Until you choose one, Folio uses
+the first it finds, in this order:
+1. `.venv/bin/python`, `venv/bin/python` or `env/bin/python` in the project, or any folder with `pyvenv.cfg`
+2. `FOLIO_PYTHON`
+3. `QUARTO_PYTHON`
+4. conda, pyenv and system Pythons
 
 That interpreter needs `jupyter_client` and `ipykernel`:
 
@@ -118,8 +119,21 @@ when you launch it from Finder.
   text, so your comments and formatting are kept.
 * **Project settings:** **⚙** in the sidebar opens `_quarto.yml` in a plain YAML editor. When you save,
   the sidebar, numbering and bibliography reload, and YAML errors show in the status bar.
-* **Empty folder:** opening a folder with no Quarto files offers to create a **Book**, a
-  **Presentation** (Reveal.js) or a **Single document**.
+* **Empty folder:** opening a folder with no Quarto files shows a start screen where you can create a
+  **Book**, a **Presentation** (Reveal.js) or a **Single document**.
+* **Delete a file:** hover over a file in the sidebar and click 🗑, or right-click → **Delete…**. After
+  you confirm, the file goes to the macOS Trash (in browser mode, to `.folio/trash/`). In a book, you
+  can also remove it from `_quarto.yml`.
+* **Python interpreter:** the bottom bar shows the Python that runs your cells, for example
+  `Python 3.12.3 (.venv)`. Click it to pick another one. Like VS Code, Folio detects virtual
+  environments in the project (`.venv`, `venv`, `env`, or any folder with `pyvenv.cfg`), conda
+  environments, pyenv versions and system Pythons. It flags interpreters that are missing
+  `ipykernel`, and you can also enter a path. Folio remembers your choice per project and also
+  passes it to Quarto as `QUARTO_PYTHON`.
+* **Export PDF** (top bar): runs `quarto render --to pdf`, for the whole book or for the current
+  document. This needs a LaTeX installation; `quarto install tinytex` is the easiest.
+* **Layout:** kernel and render controls live in the bottom bar. Drag the sidebar edge to resize it
+  (double-click resets it; the width isn't remembered between launches).
 * **Raw source:** **`</>`** switches between live preview and the plain `.qmd` text.
   **A− / A+** change the text size.
 

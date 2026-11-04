@@ -174,3 +174,23 @@ export function insertChapter(yml: string, afterFile: string | null, newFile: st
   lines.splice(at + 1, 0, `${indent}- ${newFile}`);
   return lines.join("\n");
 }
+
+/**
+ * Remove the `book.chapters` / `book.appendices` entry for `file` from a _quarto.yml, editing
+ * the text so comments and formatting are kept. Only plain `- file` / `- href: file` lines are
+ * removed; returns the text unchanged when there is no such line.
+ */
+export function removeChapter(yml: string, file: string): string {
+  const lines = yml.split("\n");
+  const esc = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^\\s*-\\s+(?:href:\\s*)?["']?${esc}["']?\\s*(#.*)?$`);
+  const idx = lines.findIndex((l) => re.test(l));
+  if (idx < 0) return yml;
+  lines.splice(idx, 1);
+  return lines.join("\n");
+}
+
+/** True when `file` is listed as a chapter or appendix in the book outline. */
+export function isInBook(info: ProjectInfo | null, file: string): boolean {
+  return !!info && bookOrder(info).some((c) => c.file === file);
+}
