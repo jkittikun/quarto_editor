@@ -107,11 +107,11 @@ try {
   ok((await page.locator(".cm-content").first().innerText()).includes("Callouts can be collapsible."), "callout expands on toggle");
   await typeAtEndOf("Callouts can be collapsible.", " DELTA");
   // raw source view on and off
-  await page.click("#toggle-source");
+  await page.click("#view-switch [data-mode=source]");
   await sleep(150);
   ok((await page.locator(".cm-content").first().innerText()).includes("::: {.callout-note}"), "raw view shows the source");
   await shot("raw-view");
-  await page.click("#toggle-source");
+  await page.click("#view-switch [data-mode=edit]");
   // font size
   await page.click("#font-inc");
   await page.click("#font-inc");
@@ -144,7 +144,7 @@ try {
   if (!process.env.E2E_SKIP_KERNEL) {
     await page.evaluate(() => folio.openFile(folio.abs("methods.qmd")));
     await sleep(500);
-    await page.locator(".cm-cell-run").first().dispatchEvent("mousedown");
+    await page.locator(".cm-cell-head", { hasText: "fig-sine" }).locator(".cm-cell-run").dispatchEvent("mousedown");
     ok(await waitFor(() => page.locator(".cm-out-img").count().then((n) => n > 0), 60000), "running a cell shows its plot");
     ok(await waitFor(() => existsSync(join(book, ".folio/cache/methods.qmd.json")), 5000), "outputs are cached in .folio/cache");
     await shot("kernel");
@@ -238,8 +238,8 @@ try {
   await page.evaluate(() => folio.openFile(folio.abs("methods.qmd")));
   await sleep(400);
   const methodsText = await page.locator(".cm-content").first().innerText();
-  ok(methodsText.includes("hidden cell · include: false") && !methodsText.includes("import numpy as np\nimport matplotlib.pyplot as plt\n```"), "include: false cell is collapsed");
-  ok(methodsText.includes("code hidden · echo: false"), "echo: false hides the code");
+  ok(methodsText.includes("#| include: false") && (await page.locator(".cm-cell-badge", { hasText: /^hidden in book$/ }).count()) === 1, "Edit view shows include: false cells in full, with a 'hidden in book' badge");
+  ok(methodsText.includes("pd.DataFrame") && (await page.locator(".cm-cell-badge", { hasText: "code hidden in book" }).count()) === 1, "Edit view shows echo: false code, with a badge");
   await page.evaluate(() => folio.openFile(folio.abs("summary.qmd")));
   ok(await waitFor(() => page.locator(".cm-include").count().then((n) => n === 1)), "{{< include >}} content is shown inline");
   const sumText = await page.locator(".cm-content").first().innerText();
@@ -258,7 +258,10 @@ try {
   await page.mouse.move(5, 500);
   // reader view
   await page.evaluate(() => folio.openFile(folio.abs("summary.qmd")));
-  await page.click("#toggle-reader");
+  // regression: Source → Reader used to stay on raw code
+  await page.click("#view-switch [data-mode=source]");
+  await sleep(150);
+  await page.click("#view-switch [data-mode=reader]");
   await sleep(300);
   const readerText = await page.locator(".cm-content").first().innerText();
   ok(!readerText.includes("only appears in the PDF") && !readerText.includes("LaTeX ·"), "reader view hides PDF-only content");
@@ -271,9 +274,22 @@ try {
   await page.evaluate(() => folio.openFile(folio.abs("methods.qmd")));
   await sleep(300);
   const readerMethods = await page.locator(".cm-content").first().innerText();
-  ok(!readerMethods.includes("hidden cell") && !readerMethods.includes("#| label"), "reader view renders cells like the book");
+  ok(!readerMethods.includes("#| include") && !readerMethods.includes("#| label") && !readerMethods.includes("```"), "reader view renders cells like the book (also after Source)");
+  ok((await page.locator("#view-switch [data-mode=reader]").getAttribute("aria-pressed")) === "true", "Reader is the active segment");
   await shot("reader");
-  await page.click("#toggle-reader");
+  await page.reload();
+  await waitFor(() => page.evaluate(() => !!window.folio?.current));
+  ok(await page.evaluate(() => folio.viewMode === "reader" && document.body.classList.contains("reader-mode")), "view mode is remembered after reopening");
+  await page.keyboard.press("Control+1");
+  await sleep(150);
+  ok(await page.evaluate(() => folio.viewMode === "edit"), "Ctrl/⌘1 switches to Edit");
+  await page.keyboard.press("Control+2");
+  await sleep(150);
+  ok(await page.evaluate(() => folio.viewMode === "source"), "Ctrl/⌘2 switches to Source");
+  await page.keyboard.press("Control+3");
+  await sleep(150);
+  ok(await page.evaluate(() => folio.viewMode === "reader"), "Ctrl/⌘3 switches to Reader");
+  await page.click("#view-switch [data-mode=edit]");
   await page.setViewportSize({ width: 1300, height: 900 });
 
   // ---------------------------------------------------------------- 5. quarto render

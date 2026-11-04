@@ -297,13 +297,12 @@ body.focus-mode #toolbar:hover { opacity: 1; }
 /* ---------- round 2 ---------- */
 .book-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 6px; }
 #new-file { font-size: 16px; line-height: 1; color: var(--muted); }
-button.active, .code-toggle.active { background: var(--accent-soft); color: var(--accent); }
-.code-toggle { font-family: var(--mono); font-size: 11.5px; font-weight: 600; }
+
 .font-ctl { display: inline-flex; align-items: center; gap: 0; }
 .font-ctl button { font-size: 12px; padding: 3px 5px; }
 #font-size { font-size: 11px; color: var(--muted); min-width: 1.6em; text-align: center; font-variant-numeric: tabular-nums; }
 body.source-file #run-above, body.source-file #run-all, body.source-file #kernel-interrupt,
-body.source-file #kernel-restart, body.source-file #kernel-status, body.source-file #toggle-source { display: none; }
+body.source-file #kernel-restart, body.source-file #kernel-status, body.source-file #view-switch { display: none; }
 .cm-source-file { font-size: 0.85em; }
 
 /* modal */
@@ -413,13 +412,11 @@ button.danger:hover { background: color-mix(in srgb, var(--important) 85%, black
 .pick-badge { font-size: 10.5px; color: var(--warning); border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; align-self: center; }
 
 /* ---------- round 4 ---------- */
-/* hidden cells (include: false / echo: false) */
-.cm-hidden-cell { padding: 2px 0 4px; cursor: pointer; }
-.cm-hidden-cell-chip {
-  display: inline-block; font: 11.5px var(--mono); color: var(--muted); background: var(--bg-code);
-  border: 1px dashed var(--border); border-radius: 6px; padding: 2px 8px;
+/* cell-option badges (Edit view) */
+.cm-cell-badge {
+  font-size: 10.5px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 7px;
+  background: var(--bg); white-space: nowrap;
 }
-.cm-hidden-cell:hover .cm-hidden-cell-chip { color: var(--fg-soft); border-color: var(--muted); }
 .cm-cell-run[disabled] { color: var(--muted); cursor: default; }
 
 /* LaTeX-only commands, raw blocks */
@@ -480,11 +477,22 @@ button.danger:hover { background: color-mix(in srgb, var(--important) 85%, black
 .pv p { margin: 4px 0; }
 
 /* reader view */
-.reader-toggle.active { background: var(--accent-soft); color: var(--accent); }
-body.reader-mode #toggle-source, body.reader-mode #run-above, body.reader-mode #run-all,
+body.reader-mode #run-above, body.reader-mode #run-all,
 body.reader-mode #kernel-interrupt, body.reader-mode #kernel-restart { display: none; }
 body.reader-mode .cm-cursor { display: none !important; }
 body.reader-mode .cm-cell-head .cm-cell-lang { opacity: .6; }
 body.reader-mode .cm-out-source { display: none; }
 .cm-include-body .cm-content { padding: 0 !important; max-width: none; flex: 1 1 auto; }
 .cm-include-body .cm-editor { height: auto; }
+
+/* ---------- view switch: Edit / Source / Reader ---------- */
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; margin: 0 2px; }
+.seg button {
+  border: 0; border-radius: 0; padding: 3px 9px; color: var(--muted); display: inline-flex; align-items: center;
+  line-height: 0;
+}
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button:hover { color: var(--fg); background: var(--bg-soft); }
+.seg button.active { background: var(--bg-soft); color: var(--fg); box-shadow: inset 0 0 0 1px var(--border); }
+:root[data-theme="dark"] .seg button.active { background: #3a3a3e; }
+.seg svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }

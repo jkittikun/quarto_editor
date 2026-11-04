@@ -270,16 +270,23 @@ export class CellHeaderWidget extends WidgetType {
     readonly running: boolean,
     readonly fencePos: number,
     readonly noEval = false,
+    readonly badges: string[] = [],
   ) {
     super();
   }
   eq(o: CellHeaderWidget) {
-    return o.lang === this.lang && o.label === this.label && o.executable === this.executable && o.running === this.running && o.fencePos === this.fencePos && o.noEval === this.noEval;
+    return o.lang === this.lang && o.label === this.label && o.executable === this.executable && o.running === this.running &&
+      o.fencePos === this.fencePos && o.noEval === this.noEval && o.badges.join("|") === this.badges.join("|");
   }
   toDOM(view: EditorView) {
     const d = el("span", "cm-cell-head");
     d.appendChild(el("span", "cm-cell-lang", escapeHtml(this.lang || "code")));
     if (this.label) d.appendChild(el("span", "cm-cell-label", escapeHtml(this.label)));
+    for (const b of this.badges) {
+      const badge = el("span", "cm-cell-badge", escapeHtml(b));
+      badge.title = "Cell option: affects the rendered book and Reader view, not this editing view";
+      d.appendChild(badge);
+    }
     if (this.executable && this.lang === "python" && !ctx.reader) {
       const b = el("button", "cm-cell-run cm-no-reveal", this.running ? "◼ Running…" : this.noEval ? "eval: false" : "▶ Run");
       b.title = this.noEval ? "This cell has eval: false — it won't be run" : "Run cell (⌘↵)";
@@ -564,26 +571,6 @@ export class HiddenBlockWidget extends WidgetType {
   }
   get estimatedHeight() {
     return 0;
-  }
-}
-
-/** Collapsed stand-in for a cell hidden by its options (include: false / echo: false). */
-export class HiddenCellWidget extends WidgetType {
-  constructor(readonly text: string, readonly pos: number) {
-    super();
-  }
-  eq(o: HiddenCellWidget) {
-    return o.text === this.text && o.pos === this.pos;
-  }
-  toDOM(view: EditorView) {
-    const d = el("div", "cm-hidden-cell");
-    d.appendChild(el("span", "cm-hidden-cell-chip", `▸ ${escapeHtml(this.text)}`));
-    d.title = "Click to show the code";
-    revealOnClick(d, view, () => this.pos);
-    return d;
-  }
-  ignoreEvent() {
-    return false;
   }
 }
 

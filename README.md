@@ -134,11 +134,15 @@ when you launch it from Finder.
   document. This needs a LaTeX installation; `quarto install tinytex` is the easiest.
 * **Layout:** kernel and render controls live in the bottom bar. Drag the sidebar edge to resize it
   (double-click resets it; the width isn't remembered between launches).
-* **Reader view:** **📖 Reader** (⌘⌥R) shows the chapter read-only, the way the HTML book will look.
-  Cells follow their options, PDF-only content is hidden, and footnotes are listed at the end.
+* **Three views:** the icon switch in the top bar (✎ │ `</>` │ book) picks one of three modes. Folio
+  remembers the one you used last.
+  * **Edit** (⌘1) is the live preview. Every cell's code and output are visible. Options like
+    `include: false` or `echo: false` show as "hidden in book" badges in the cell header.
+  * **Source** (⌘2) shows the plain `.qmd` text.
+  * **Reader** (⌘3) is read-only and looks like the HTML book: cell options are applied, PDF-only
+    content is hidden, and footnotes are listed at the end.
 * **Hover previews:** hover a cross-reference (`@fig-…`, `@tbl-…`, `@eq-…`, `@thm-…`, `@sec-…`), a
   citation or a footnote to preview it.
-* **Raw source:** **`</>`** switches between live preview and the plain `.qmd` text.
   **A− / A+** change the text size.
 
 ## Keyboard
@@ -149,8 +153,9 @@ when you launch it from Finder.
 | ⌘O | Open project folder |
 | ⌘↵ / ⇧↵ | Run cell / run cell and move to the next |
 | ⌘⌥↵ | Run all cells above the cursor |
-| ⌘⇧E | Toggle raw source view (`</>`) |
-| ⌘⌥R | Toggle reader view |
+| ⌘1 / ⌘2 / ⌘3 | Edit / Source / Reader view |
+| ⌘⇧E | Toggle Edit ↔ Source |
+| ⌘⌥R | Toggle Reader |
 | ⌘+ / ⌘− | Larger / smaller text (`A+` / `A−`) |
 | ⌘B / ⌘I / ⌘E | Bold / italic / inline code |
 | ⌘-click | Follow a cross-reference or link |
@@ -180,7 +185,7 @@ when you launch it from Finder.
 | YAML front matter | ✅ title + metadata chips |
 | `[@cite]`, `@cite`, `@fig-x` etc. | ✅ resolved across the book |
 | Shortcodes `{{< … >}}` | shown as code chips; `{{< include file.qmd >}}` shows the included file inline |
-| Cell options `include`, `echo`, `output`, `eval` | ✅ collapsed while editing, hidden as in the book in reader view |
+| Cell options `include`, `echo`, `output`, `eval` | ✅ badges while editing; applied as in the book in Reader view |
 | `\index{…}`, `\newpage`, `\label{…}` and other LaTeX-only commands | ✅ hidden (🔖 marker for index entries) |
 | Footnotes `[^id]`, `^[inline]` | ✅ numbered superscripts, hover to read, listed at the end in reader view |
 | `.column-margin`, `.aside` | ✅ in the right margin on wide windows |

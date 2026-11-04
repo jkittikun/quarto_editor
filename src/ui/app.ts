@@ -30,6 +30,8 @@ interface OpenDoc {
   dirty: boolean;
 }
 
+export type ViewMode = "edit" | "source" | "reader";
+
 export class App {
   root = "";
   files: string[] = [];
@@ -175,8 +177,7 @@ export class App {
     this.hideStartPanel();
     localStorage.setItem(`folio.lastFile:${this.root}`, this.rel(path));
     this.view.setState(doc.state);
-    this.applyPreviewMode();
-    this.applyReaderMode();
+    this.applyViewMode();
     document.body.classList.toggle("source-file", fileKind(path) !== "markdown");
     this.reindex();
     this.view.dispatch({ effects: refreshEffect.of(null) });
@@ -190,14 +191,17 @@ export class App {
       doc: text,
       extensions: editorExtensions({
         kind: fileKind(path),
-        preview: this.previewOn(),
+        preview: this.viewMode !== "source",
         reader: ctx.reader,
         onChange: () => this.onDocChange(),
         onSave: () => this.current && this.flushSave(this.current),
         extraKeys: [
           { key: "Mod-p", run: () => (this.quickOpen.show(this.files.filter((f) => TEXT_EXT.test(f))), true) },
           { key: "Mod-Shift-r", run: () => (this.render(false), true) },
-          { key: "Mod-Shift-e", run: () => (this.togglePreview(), true) },
+          { key: "Mod-Shift-e", run: () => (this.setViewMode(this.viewMode === "source" ? "edit" : "source"), true) },
+          { key: "Mod-1", run: () => (this.setViewMode("edit"), true) },
+          { key: "Mod-2", run: () => (this.setViewMode("source"), true) },
+          { key: "Mod-3", run: () => (this.setViewMode("reader"), true) },
         ],
       }),
     });
@@ -232,44 +236,65 @@ export class App {
     });
   }
 
-  // ---- reader view --------------------------------------------------------
+  // ---- view mode: Edit / Source / Reader ------------------------------------
 
-  toggleReader() {
-    ctx.reader = !ctx.reader;
-    localStorage.setItem("folio.reader", ctx.reader ? "on" : "off");
-    this.applyReaderMode();
+  viewMode: ViewMode = "edit";
+  private lastNonReader: ViewMode = "edit";
+
+  /** Read the saved mode, migrating the old independent toggles (folio.preview / folio.reader). */
+  loadViewMode(): ViewMode {
+    let m = localStorage.getItem("folio.viewMode") as ViewMode | null;
+    if (m !== "edit" && m !== "source" && m !== "reader") {
+      m = localStorage.getItem("folio.reader") === "on" ? "reader" : localStorage.getItem("folio.preview") === "off" ? "source" : "edit";
+      localStorage.setItem("folio.viewMode", m);
+    }
+    localStorage.removeItem("folio.reader");
+    localStorage.removeItem("folio.preview");
+    return m;
   }
 
-  applyReaderMode() {
-    document.body.classList.toggle("reader-mode", ctx.reader);
-    $("#toggle-reader").classList.toggle("active", ctx.reader);
-    $("#toggle-reader").title = ctx.reader ? "Back to editing (⌘⌥R)" : "Reader view (⌘⌥R)";
-    if (readerCompartment.get(this.view.state) !== undefined) {
-      this.view.dispatch({ effects: [readerCompartment.reconfigure(readerExtensions(ctx.reader)), refreshEffect.of(null)] });
+  setViewMode(mode: ViewMode) {
+    if (mode === this.viewMode) return;
+    if (mode === "reader" && this.viewMode !== "reader") this.lastNonReader = this.viewMode;
+    this.viewMode = mode;
+    localStorage.setItem("folio.viewMode", mode);
+    this.applyViewMode();
+  }
+
+  toggleReader() {
+    this.setViewMode(this.viewMode === "reader" ? this.lastNonReader : "reader");
+  }
+
+  /** Apply the mode to the open editor: both compartments are reconfigured together. */
+  applyViewMode() {
+    const mode = this.viewMode;
+    ctx.reader = mode === "reader";
+    document.body.classList.toggle("reader-mode", mode === "reader");
+    document.body.classList.toggle("source-mode", mode === "source");
+    for (const b of document.querySelectorAll<HTMLButtonElement>("#view-switch [data-mode]")) {
+      const on = b.dataset.mode === mode;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-pressed", String(on));
     }
-    if (ctx.reader) this.view.contentDOM.blur();
+    const st = this.view.state;
+    if (previewCompartment.get(st) === undefined) return; // non-Markdown file
+    // keep the reading position across the switch
+    const scroller = this.view.scrollDOM;
+    const ratio = scroller.scrollHeight > scroller.clientHeight ? scroller.scrollTop / (scroller.scrollHeight - scroller.clientHeight) : 0;
+    this.view.dispatch({
+      effects: [
+        previewCompartment.reconfigure(previewExtensions(mode !== "source")),
+        readerCompartment.reconfigure(readerExtensions(mode === "reader")),
+        refreshEffect.of(null),
+      ],
+    });
+    if (mode === "reader") this.view.contentDOM.blur();
+    requestAnimationFrame(() => {
+      scroller.scrollTop = ratio * (scroller.scrollHeight - scroller.clientHeight);
+    });
   }
 
   // ---- view options -------------------------------------------------------
-
-  previewOn() {
-    return localStorage.getItem("folio.preview") !== "off";
-  }
-
-  togglePreview() {
-    localStorage.setItem("folio.preview", this.previewOn() ? "off" : "on");
-    this.applyPreviewMode();
-  }
-
-  /** Make the current editor match the live-preview / raw-source preference. */
-  applyPreviewMode() {
-    const on = this.previewOn();
-    $("#toggle-source").classList.toggle("active", !on);
-    $("#toggle-source").title = on ? "Show raw source (⌘⇧E)" : "Show live preview (⌘⇧E)";
-    if (previewCompartment.get(this.view.state) !== undefined) {
-      this.view.dispatch({ effects: previewCompartment.reconfigure(previewExtensions(on)) });
-    }
-  }
 
   fontSize() {
     const v = Number(localStorage.getItem("folio.fontSize"));
@@ -851,8 +876,11 @@ export class App {
     $("#render-book").onclick = () => this.render(true);
     $("#run-all").onclick = () => this.runAll();
     $("#export-pdf").onclick = () => this.exportPdf();
-    $("#toggle-reader").onclick = () => this.toggleReader();
-    ctx.reader = localStorage.getItem("folio.reader") === "on";
+    this.viewMode = this.loadViewMode();
+    ctx.reader = this.viewMode === "reader";
+    for (const b of document.querySelectorAll<HTMLButtonElement>("#view-switch [data-mode]")) {
+      b.onclick = () => this.setViewMode(b.dataset.mode as ViewMode);
+    }
     $("#python-env").onclick = () => this.pickPython();
     this.wireResizer();
     $("#run-above").onclick = () => this.runAll(true);
@@ -884,7 +912,7 @@ export class App {
     $("#toggle-focus").onclick = () => {
       document.body.classList.toggle("focus-mode");
     };
-    $("#toggle-source").onclick = () => this.togglePreview();
+
     document.addEventListener("keydown", (e) => {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "p" && !e.shiftKey) {
@@ -893,6 +921,9 @@ export class App {
       } else if (mod && e.key.toLowerCase() === "o") {
         e.preventDefault();
         pick();
+      } else if (mod && !e.shiftKey && !e.altKey && ["1", "2", "3"].includes(e.key)) {
+        e.preventDefault();
+        this.setViewMode((["edit", "source", "reader"] as const)[+e.key - 1]);
       } else if (mod && (e.key === "=" || e.key === "+")) {
         e.preventDefault();
         this.setFontSize(this.fontSize() + 1);

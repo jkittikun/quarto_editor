@@ -17,7 +17,7 @@ import { outputsField, parseInfo, cellOptions, hashCode } from "./cells";
 import {
   MathWidget, ImageWidget, RefWidget, FrontMatterWidget, CalloutHeaderWidget, LabelWidget, TabBarWidget,
   CellHeaderWidget, CellOutputWidget, DiagramWidget, TableWidget, BulletWidget, CheckboxWidget, HrWidget,
-  RefsWidget, WrapWidget, ColumnsWidget, HiddenBlockWidget, HiddenCellWidget, StackWidget,
+  RefsWidget, WrapWidget, ColumnsWidget, HiddenBlockWidget, StackWidget,
   FootnoteWidget, FootnotesListWidget, MarginWidget, ChipWidget, IndexMarkWidget, IncludeWidget, refText, citeText, md, inlineCtx, renderMath,
 } from "./widgets";
 
@@ -537,8 +537,8 @@ export function buildDecorations(state: EditorState): DecorationSet {
           }
           const opts = executable ? cellOptions(code) : {};
           const off = (k: string) => executable && opts[k] === "false";
-          const out = executable && !off("output") ? outputs?.get(n.from) : undefined;
-          const touched = linesTouch(n.from, n.to);
+          // Cell options shape the *rendered book*; Edit view shows everything, Reader applies them.
+          const out = executable && !(ctx.reader && off("output")) ? outputs?.get(n.from) : undefined;
           const outputWidget = () => {
             if (!out) return null;
             const label = opts.label;
@@ -549,18 +549,21 @@ export function buildDecorations(state: EditorState): DecorationSet {
           };
           // Cell options, as in the rendered book: include: false hides everything,
           // echo: false hides the code but keeps the output.
-          if (closed && !touched && off("include")) {
-            addBlock(first.from, last.to, ctx.reader ? null : new HiddenCellWidget(`hidden cell · include: false · ${lang}`, codeFrom));
+          if (ctx.reader && closed && off("include")) {
+            addBlock(first.from, last.to, null);
             return false;
           }
-          if (closed && !touched && off("echo")) {
-            const parts: WidgetType[] = [];
-            if (!ctx.reader) parts.push(new HiddenCellWidget(`code hidden · echo: false · ${lang}`, codeFrom));
+          if (ctx.reader && closed && off("echo")) {
             const ow = outputWidget();
-            if (ow) parts.push(ow);
-            addBlock(first.from, last.to, parts.length ? new StackWidget(parts) : null);
+            addBlock(first.from, last.to, ow ? new StackWidget([ow]) : null);
             return false;
           }
+          const badges = [
+            off("include") && "hidden in book",
+            !off("include") && off("echo") && "code hidden in book",
+            !off("include") && off("output") && "output hidden in book",
+            off("eval") && "not run",
+          ].filter(Boolean) as string[];
           addLine(first.number, "cm-code cm-code-open");
           let optEnd = first.number; // last `#|` option line
           for (let ln = first.number + 1; ln < last.number; ln++) {
@@ -571,7 +574,7 @@ export function buildDecorations(state: EditorState): DecorationSet {
           }
           if (closed) addLine(last.number, "cm-code cm-code-close");
           if (!touches(first.from, first.to)) {
-            ranges.push(Decoration.replace({ widget: new CellHeaderWidget(lang, opts.label ?? null, executable, !!out?.running, n.from, off("eval")) }).range(first.from, first.to));
+            ranges.push(Decoration.replace({ widget: new CellHeaderWidget(lang, opts.label ?? null, executable, !!out?.running, n.from, off("eval"), badges) }).range(first.from, first.to));
           }
           // reader view: option lines are not part of the rendered book
           if (ctx.reader && executable && optEnd > first.number && optEnd < last.number) {

@@ -116,11 +116,18 @@ function widgetNames(st: EditorState): string[] {
 
 describe("cell options and reader view decorations", () => {
   const doc = "```{python}\n#| include: false\nimport x\n```\n\n```{python}\n#| echo: false\n1+1\n```\n\nText\\index{term} and[^n].\n\n::: {.content-visible when-format=\"pdf\"}\nPDF\n:::\n\n[^n]: A note.\n";
-  it("collapses include:false and echo:false cells while editing", () => {
+  it("shows include:false and echo:false cells in full while editing, with badges", () => {
     ctx.reader = false;
-    const names = widgetNames(state(doc));
-    expect(names.filter((n) => n === "HiddenCellWidget")).toHaveLength(1);
-    expect(names).toContain("StackWidget(HiddenCellWidget)");
+    const st = state(doc);
+    const names = widgetNames(st);
+    expect(names).not.toContain("StackWidget(CellOutputWidget)");
+    expect(names.filter((n) => n === "CellHeaderWidget")).toHaveLength(2);
+    const badges: string[][] = [];
+    buildDecorations(st).between(0, st.doc.length, (_f, _t, v) => {
+      const w = (v.spec as any).widget;
+      if (w?.constructor.name === "CellHeaderWidget") badges.push(w.badges);
+    });
+    expect(badges).toEqual([["hidden in book"], ["code hidden in book"]]);
     expect(names).toContain("IndexMarkWidget");
     expect(names).toContain("FootnoteWidget");
   });
@@ -128,7 +135,7 @@ describe("cell options and reader view decorations", () => {
     ctx.reader = true;
     try {
       const names = widgetNames(state(doc));
-      expect(names).not.toContain("HiddenCellWidget");
+      expect(names).not.toContain("CellHeaderWidget"); // both cells are hidden/collapsed as in the book
       expect(names).not.toContain("IndexMarkWidget");
       expect(names).toContain("FootnotesListWidget");
       expect(listCells(state(doc)).length).toBe(2);
