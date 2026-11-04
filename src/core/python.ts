@@ -54,11 +54,11 @@ export function pythonCandidates(i: CandidateInputs): PythonCandidate[] {
     const p = `${i.home}/.pyenv/versions/${v}/${bin}`;
     if (i.exists(p)) add(p, `pyenv ${v}`, "pyenv");
   }
-  // 5. system
+  // 5. system: whatever `python3` a terminal would run first, then well-known locations
+  add("python3", "python3 on PATH", "system");
   for (const p of ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]) {
     if (i.exists(p)) add(p, p.startsWith("/opt/homebrew") ? "Homebrew" : "system", "system");
   }
-  add("python3", "python3 on PATH", "system");
   return out;
 }
 
@@ -69,4 +69,21 @@ export const PROBE =
 export function parseProbe(out: string): { version: string; ready: boolean } | null {
   const m = /^(\d+\.\d+\.\d+\S*)\s+(True|False)\s*$/m.exec(out);
   return m ? { version: m[1], ready: m[2] === "True" } : null;
+}
+
+export interface DetectedPython {
+  path: string;
+  label: string;
+  source: string;
+  version: string | null;
+  ready: boolean;
+}
+
+/**
+ * The interpreter to use: the user's explicit choice, else a project venv, else the first
+ * interpreter that can actually run cells (has jupyter_client + ipykernel), else the first found.
+ */
+export function defaultPython<T extends DetectedPython>(list: T[], chosen: string | null): T | DetectedPython | null {
+  if (chosen) return list.find((p) => p.path === chosen) ?? { path: chosen, label: "custom", source: "custom", version: null, ready: false };
+  return list.find((p) => p.source === "project") ?? list.find((p) => p.ready) ?? list[0] ?? null;
 }

@@ -3,6 +3,7 @@ import { EditorView } from "@codemirror/view";
 import { type Backend, type KernelMsg, type PythonEnv, joinPath, dirname, relativeTo } from "../backend/types";
 import { parseQuartoYml, bookOrder, insertChapter, removeChapter, isInBook, type ProjectInfo } from "../core/project";
 import { projectTemplate, newDocument, type TemplateKind } from "../core/templates";
+import { defaultPython } from "../core/python";
 import { parseFreeze, freezePath } from "../core/freeze";
 import { buildIndex, scanTargets, type XrefTarget, type HeadingNumber } from "../core/xref";
 import { parseBibtex } from "../core/bibtex";
@@ -411,9 +412,7 @@ export class App {
 
   /** The interpreter that will actually be used: user choice, else the first detected. */
   effectivePython(): PythonEnv | null {
-    const sel = this.selectedPython();
-    const list = this.pythons ?? [];
-    return (sel && list.find((p) => p.path === sel)) || (sel ? { path: sel, label: "custom", source: "custom", version: null, ready: false } : list[0] ?? null);
+    return defaultPython(this.pythons ?? [], this.selectedPython()) as PythonEnv | null;
   }
 
   async refreshPythons() {

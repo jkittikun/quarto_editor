@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { removeChapter, insertChapter, parseQuartoYml, bookOrder } from "../src/core/project";
-import { pythonCandidates, parseProbe } from "../src/core/python";
+import { pythonCandidates, parseProbe, defaultPython } from "../src/core/python";
 
 const yml = `book:
   title: "T"
@@ -68,13 +68,35 @@ describe("pythonCandidates", () => {
       "conda:conda: base",
       "conda:conda: sci",
       "pyenv:pyenv 3.11.9",
-      "system:system",
       "system:python3 on PATH",
+      "system:system",
     ]);
   });
   it("parses probe output", () => {
     expect(parseProbe("3.12.3 True\n")).toEqual({ version: "3.12.3", ready: true });
     expect(parseProbe("3.9.1 False")).toEqual({ version: "3.9.1", ready: false });
     expect(parseProbe("Traceback")).toBeNull();
+  });
+});
+
+describe("defaultPython", () => {
+  const sys = (path: string, ready: boolean) => ({ path, label: "system", source: "system", version: "3.12.0", ready });
+  const venv = { path: "/p/.venv/bin/python", label: ".venv", source: "project", version: "3.11.0", ready: false };
+  it("prefers a project venv even if it lacks ipykernel", () => {
+    expect(defaultPython([sys("/usr/bin/python3", true), venv], null)).toBe(venv);
+  });
+  it("otherwise picks the first interpreter that can run cells", () => {
+    const ready = sys("/opt/homebrew/bin/python3", true);
+    expect(defaultPython([sys("/usr/bin/python3", false), ready], null)).toBe(ready);
+  });
+  it("falls back to the first one found", () => {
+    const first = sys("/usr/bin/python3", false);
+    expect(defaultPython([first, sys("python3", false)], null)).toBe(first);
+    expect(defaultPython([], null)).toBeNull();
+  });
+  it("always honours an explicit choice, even one not detected", () => {
+    const a = sys("/a/python", false);
+    expect(defaultPython([venv, a], "/a/python")).toBe(a);
+    expect(defaultPython([venv], "/custom/python")).toMatchObject({ path: "/custom/python", source: "custom" });
   });
 });

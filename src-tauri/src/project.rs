@@ -228,12 +228,13 @@ pub fn python_candidates(root: &Path, home: &Path) -> Vec<(String, String, Strin
             add(p.to_string_lossy().into_owned(), format!("pyenv {v}"), "pyenv");
         }
     }
+    // whatever `python3` a terminal would run first, then well-known locations
+    add("python3".into(), "python3 on PATH".into(), "system");
     for p in ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"] {
         if Path::new(p).exists() {
             add(p.into(), if p.starts_with("/opt/homebrew") { "Homebrew".into() } else { "system".into() }, "system");
         }
     }
-    add("python3".into(), "python3 on PATH".into(), "system");
     out
 }
 
