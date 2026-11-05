@@ -403,7 +403,17 @@ try {
 
   // ---------------------------------------------------------------- 4k. copy button, selection visible in code
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  await page.locator(".cm-cell-head", { hasText: "fig-sine" }).locator(".cm-cell-copy").dispatchEvent("mousedown");
+  // start from a known state: Edit view, methods.qmd at the top, cursor outside the cells
+  await page.evaluate(async () => {
+    folio.setViewMode("edit");
+    await folio.openFile(folio.abs("methods.qmd"));
+    folio.view.dispatch({ selection: { anchor: 0 } });
+    folio.view.contentDOM.blur();
+    folio.view.scrollDOM.scrollTop = 0;
+  });
+  const sineHead = page.locator(".cm-cell-head", { hasText: "fig-sine" });
+  await sineHead.waitFor({ state: "attached", timeout: 10000 });
+  await sineHead.locator(".cm-cell-copy").dispatchEvent("mousedown");
   const clip = await page.evaluate(() => navigator.clipboard.readText());
   ok(clip.startsWith("import numpy as np") && !clip.includes("#|"), "copy button copies the code without #| lines");
   // select a word inside a code cell and check the selection layer shows through
@@ -561,6 +571,19 @@ try {
   ok(vite.exitCode === null, `dev server still running${vite.exitCode !== null ? ` (exited with ${vite.exitCode})` : ""}`);
 } catch (e) {
   ok(false, `unexpected error: ${e.stack ?? e}`);
+  if (errors.length) console.log("page errors:\n  " + errors.join("\n  "));
+  try {
+    const state = await page.evaluate(() => ({
+      mode: folio.viewMode,
+      file: folio.current ? folio.rel(folio.current.path) : null,
+      selection: folio.view.state.selection.main.head,
+      cellHeads: [...document.querySelectorAll(".cm-cell-head")].map((el) => el.textContent),
+      startPanel: !document.querySelector("#start-panel")?.hidden,
+      modal: document.querySelector(".modal")?.textContent ?? null,
+    }));
+    console.log("app state: " + JSON.stringify(state));
+    await page.screenshot({ path: join(ROOT, "e2e-failure.png") });
+  } catch {}
 } finally {
   await browser.close();
   vite.kill();

@@ -10,3 +10,4 @@ src-tauri/gen/
 _book/
 _freeze/
 __pycache__/
+e2e-failure.png

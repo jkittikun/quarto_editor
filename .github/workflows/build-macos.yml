@@ -13,9 +13,9 @@ jobs:
   build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -38,7 +38,7 @@ jobs:
         run: npx tauri build --target universal-apple-darwin
 
       - name: Upload .dmg
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Folio-macOS
           path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
