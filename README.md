@@ -140,8 +140,6 @@ when you launch it from Finder.
   * In a book, renaming updates `_quarto.yml`, and a duplicate is added right after the original.
   * Delete moves the file to the macOS Trash (in browser mode, to `.folio/trash/`).
   * ↑/↓ move through the files.
-* **Present** (▶ in the top bar, ⌘⇧P, shown for `format: revealjs` documents): renders the slides with
-  Quarto and shows the real Reveal.js presentation full-screen. Press Esc to exit.
 * **Copy code:** every code block has a copy button that copies the code without its `#|` options.
 * **Python interpreter:** the bottom bar shows the Python that runs your cells, for example
   `Python 3.12.3 (.venv)`. Click it to pick another one. Like VS Code, Folio detects virtual
@@ -154,11 +152,11 @@ when you launch it from Finder.
   `nbformat`, `nbclient`) in one step.
   * An interpreter that is missing packages is shown in orange, and the picker offers **Install
     missing packages**.
-  * Before Render, Present or Export PDF, Folio warns and offers to install them instead of letting
+  * Before Render or Export PDF, Folio warns and offers to install them instead of letting
     Quarto fail with `No module named 'yaml'`.
 * **Export PDF** (top bar): runs `quarto render --to pdf`, for the whole book or for the current
   document. This needs a LaTeX installation; `quarto install tinytex` is the easiest.
-* **Layout:** kernel and render controls live in the bottom bar. Drag the sidebar edge to resize it
+* **Layout:** **Render** / **Render book** and **Export PDF** sit in the top bar; the Python and kernel controls live in the bottom bar. Drag the sidebar edge to resize it
   (double-click resets it; the width isn't remembered between launches).
 * **Three views:** the icon switch in the top bar (✎ │ `</>` │ book) picks one of three modes. Folio
   remembers the one you used last.
@@ -184,7 +182,6 @@ when you launch it from Finder.
 | ⌘⌥R | Toggle Reader |
 | ⌘⇧G | Source control panel |
 | ⌘⇧L | Line numbers |
-| ⌘⇧P | Present (Reveal.js) |
 | ↩ / ⌘D / ⌘⌫ | Rename / duplicate / delete the selected file (sidebar) |
 | ⌘+ / ⌘− | Larger / smaller text (`A+` / `A−`) |
 | ⌘B / ⌘I / ⌘E | Bold / italic / inline code |

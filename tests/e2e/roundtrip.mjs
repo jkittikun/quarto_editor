@@ -194,11 +194,13 @@ try {
   const off = Math.abs(content.x + content.width / 2 - (pane.x + pane.width / 2));
   ok(off < 3, `content column is centered in the editor pane (off by ${off.toFixed(1)} px)`);
   const inFooter = await page.evaluate(() =>
-    ["#python-env", "#run-above", "#run-all", "#kernel-interrupt", "#kernel-restart", "#render-chapter", "#render-book"].every(
+    ["#python-env", "#run-above", "#run-all", "#kernel-interrupt", "#kernel-restart"].every(
       (sel) => document.querySelector(sel)?.closest("#statusbar"),
     ),
   );
-  ok(inFooter, "kernel and render controls are in the bottom bar");
+  ok(inFooter, "kernel controls are in the bottom bar");
+  const topBar = await page.evaluate(() => [...document.querySelectorAll("#toolbar button[id]")].map((b) => b.id).filter((id) => /render|export|present/.test(id)).join(","));
+  ok(topBar === "render-chapter,render-book,export-pdf", `Render buttons sit in the top bar before Export PDF (${topBar})`);
   const pyH = await page.evaluate(() => document.querySelector("#python-env").getBoundingClientRect().height);
   const barH = await page.evaluate(() => document.querySelector("#statusbar").getBoundingClientRect().height);
   ok(pyH < 24 && barH < 30, `Python status fits on one line (button ${pyH}px, bar ${barH}px)`);
@@ -479,23 +481,8 @@ try {
   ok(await waitFor(() => page.locator("#scm-panel [data-scm=push]").innerText().then((t) => t.includes("Connect repository"))), "no remote → 'Connect repository…'");
   await page.click("#toggle-scm");
 
-  // ---------------------------------------------------------------- 4m. present (Reveal.js)
-  ok(await page.locator("#present-btn").isHidden(), "▶ Present is hidden for non-presentations");
-  if (FAKE_QUARTO) {
-    const slidesDir = join(work, "slides");
-    cpSync(join(ROOT, "examples/slides"), slidesDir, { recursive: true });
-    await page.evaluate((dir) => folio.openProject(dir), slidesDir);
-    await waitFor(() => page.evaluate(() => !!folio.current));
-    ok(await waitFor(() => page.locator("#present-btn").isVisible(), 3000), "▶ Present appears for a Reveal.js document");
-    await page.click("#present-btn");
-    // the selected Python may lack Quarto's packages: then Folio asks first
-    await waitFor(async () => (await page.locator("#present").isVisible()) || (await page.locator(".modal-choice[data-choice=anyway]").count()) > 0, 5000);
-    if (await page.locator(".modal-choice[data-choice=anyway]").count()) await page.click(".modal-choice[data-choice=anyway]");
-    ok(await waitFor(() => page.locator("#present").isVisible(), 15000), "Present renders and opens the slides full-screen");
-    ok(await waitFor(() => page.frameLocator("#present-frame").locator(".reveal").count().then((n) => n === 1), 5000), "the rendered Reveal.js output is shown");
-    await page.evaluate(() => folio.closePresentation());
-    ok(await page.locator("#present").isHidden(), "Esc / ✕ closes the presentation");
-  }
+  // ---------------------------------------------------------------- 4m. no Present button (removed)
+  ok((await page.locator("#present-btn, #present").count()) === 0, "there is no Present button");
   await page.evaluate((dir) => folio.openProject(dir), book);
   await waitFor(() => page.evaluate(() => !!folio.current));
 

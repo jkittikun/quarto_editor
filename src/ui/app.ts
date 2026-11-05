@@ -1,7 +1,7 @@
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { type Backend, type KernelMsg, type PythonEnv, joinPath, dirname, relativeTo } from "../backend/types";
-import { parseQuartoYml, bookOrder, insertChapter, removeChapter, isInBook, renameChapter, fileTree, isRevealDoc, type ProjectInfo, type TreeNode } from "../core/project";
+import { parseQuartoYml, bookOrder, insertChapter, removeChapter, isInBook, renameChapter, fileTree, type ProjectInfo, type TreeNode } from "../core/project";
 import { projectTemplate, newDocument, type TemplateKind } from "../core/templates";
 import { defaultPython, canInstallInto, KERNEL_PACKAGES } from "../core/python";
 import { parseFreeze, freezePath, matchFrozen } from "../core/freeze";
@@ -186,7 +186,6 @@ export class App {
     this.view.setState(doc.state);
     this.applyViewMode();
     this.applyLineNumbers();
-    this.updatePresentButton();
     if (this.scm?.open) {
       this.scm.render();
       this.scm.renderDiff();
@@ -814,7 +813,6 @@ export class App {
     this.saveSoon();
     this.reindexSoon();
     this.scm?.diffSoon();
-    this.updatePresentSoon();
     this.updateStatusSoon();
   }
 
@@ -1006,55 +1004,6 @@ export class App {
   // Rendering with quarto
   // -------------------------------------------------------------------------
 
-  /** Show ▶ Present only for Reveal.js documents. */
-  updatePresentButton() {
-    const show = !!this.current && fileKind(this.current.path) === "markdown" && isRevealDoc(this.view.state.doc.toString(), ctx.projectFormats);
-    $("#present-btn").hidden = !show;
-  }
-
-  /** Render the slides with Quarto, then show the real Reveal.js output full-screen inside Folio. */
-  async present() {
-    if (!this.current || $("#present-btn").hidden) return;
-    const file = this.current.path;
-    await this.flushSave(this.current);
-    if (!(await this.ensureRenderPython(file))) return;
-    const log = $("#log");
-    $("#log-panel").hidden = false;
-    $("#log-title").textContent = `Preparing slides: ${this.rel(file)}…`;
-    log.textContent = "";
-    const res = await this.backend.render(this.root, file, (line) => {
-      log.textContent += line + "\n";
-      log.scrollTop = log.scrollHeight;
-    }, { to: "revealjs", python: this.effectivePython()?.path });
-    if (!res.ok) {
-      $("#log-title").textContent = "Couldn't render the slides";
-      this.renderFailureHint(log.textContent ?? "");
-      return;
-    }
-    $("#log-title").textContent = "Slides ready";
-    $("#log-panel").hidden = true;
-    const out = res.output ?? file.replace(/\.[^./]+$/, ".html");
-    const overlay = $("#present");
-    const frame = $<HTMLIFrameElement>("#present-frame");
-    frame.src = this.backend.fileUrl(out) + `?t=${Date.now()}`;
-    overlay.hidden = false;
-    frame.onload = () => frame.contentWindow?.focus();
-    try {
-      await overlay.requestFullscreen?.();
-    } catch {
-      /* full screen not available: the overlay still fills the window */
-    }
-  }
-
-  closePresentation() {
-    const overlay = $("#present");
-    if (overlay.hidden) return;
-    overlay.hidden = true;
-    $<HTMLIFrameElement>("#present-frame").src = "about:blank";
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    this.view.focus();
-  }
-
   async exportPdf() {
     if (!this.root) return;
     const book = this.info?.type === "book";
@@ -1147,11 +1096,6 @@ export class App {
     $("#export-pdf").onclick = () => this.exportPdf();
     $("#toggle-lines").onclick = () => this.toggleLineNumbers();
     $("#outline").addEventListener("keydown", (e) => this.onSidebarKey(e));
-    $("#present-btn").onclick = () => this.present();
-    $("#present-close").onclick = () => this.closePresentation();
-    document.addEventListener("fullscreenchange", () => {
-      if (!document.fullscreenElement) this.closePresentation();
-    });
     this.viewMode = this.loadViewMode();
     ctx.reader = this.viewMode === "reader";
     for (const b of document.querySelectorAll<HTMLButtonElement>("#view-switch [data-mode]")) {
@@ -1200,12 +1144,6 @@ export class App {
       } else if (mod && !e.shiftKey && !e.altKey && ["1", "2", "3"].includes(e.key)) {
         e.preventDefault();
         this.setViewMode((["edit", "source", "reader"] as const)[+e.key - 1]);
-      } else if (e.key === "Escape" && !$("#present").hidden) {
-        e.preventDefault();
-        this.closePresentation();
-      } else if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
-        e.preventDefault();
-        this.present();
       } else if (mod && e.shiftKey && e.key.toLowerCase() === "g") {
         e.preventDefault();
         this.scm.toggle();
@@ -1236,7 +1174,6 @@ export class App {
     el.classList.toggle("warn", warn);
   }
 
-  private updatePresentSoon = debounce(() => this.updatePresentButton(), 500);
   private updateStatusSoon = debounce(() => this.updateStatus(), 400);
   updateStatus() {
     const text = this.view.state.doc.toString();

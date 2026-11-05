@@ -42,9 +42,8 @@
           <button id="toggle-sidebar" class="icon" title="Toggle sidebar (⌘\)">☰</button>
           <div id="crumb"></div>
           <div class="spacer"></div>
-          <button id="present-btn" class="icon-btn" hidden title="Present slides (⌘⇧P)" aria-label="Present">
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6L12.8 8z"/></svg>
-          </button>
+          <button id="render-chapter" title="quarto render this chapter (⇧⌘R)">Render chapter</button>
+          <button id="render-book" title="quarto render the whole project">Render book</button>
           <button id="export-pdf" title="Export PDF with Quarto (whole book for book projects)">Export PDF</button>
           <span class="sep"></span>
           <div id="view-switch" class="seg" role="group" aria-label="View mode">
@@ -90,18 +89,11 @@
           <button id="kernel-interrupt" class="icon" title="Interrupt kernel">◼</button>
           <button id="kernel-restart" class="icon" title="Restart kernel">↻</button>
           <span class="sep"></span>
-          <button id="render-chapter" title="quarto render this chapter (⇧⌘R)">Render chapter</button>
-          <button id="render-book" title="quarto render the whole project">Render book</button>
-          <span class="sep"></span>
           <span id="word-count"></span>
         </footer>
       </main>
       <div id="scm-resizer" hidden title="Drag to resize · double-click to reset"></div>
       <aside id="scm-panel" hidden aria-label="Source control"></aside>
-    </div>
-    <div id="present" hidden>
-      <iframe id="present-frame" title="Presentation" allow="fullscreen"></iframe>
-      <button id="present-close" title="Exit presentation (Esc)" aria-label="Exit presentation">✕</button>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
