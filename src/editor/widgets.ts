@@ -5,6 +5,7 @@ import { formatCitation, formatReference } from "../core/bibtex";
 import { isXrefLabel, type XrefTarget } from "../core/xref";
 import type { CiteItem } from "../core/cite";
 import { ctx, setTabEffect, toggleCalloutEffect, activateEffect, type CellOutputs } from "./context";
+import { codeBody } from "../core/freeze";
 import type { KernelOutput } from "../backend/types";
 
 // ---------------------------------------------------------------------------
@@ -287,6 +288,24 @@ export class CellHeaderWidget extends WidgetType {
       badge.title = "Cell option: affects the rendered book and Reader view, not this editing view";
       d.appendChild(badge);
     }
+    const copy = el("button", "cm-cell-copy cm-no-reveal", COPY_ICON);
+    copy.title = "Copy code";
+    copy.setAttribute("aria-label", "Copy code");
+    copy.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      copyText(cellCodeAt(view, this.fencePos)).then((ok) => {
+        copy.innerHTML = ok ? CHECK_ICON : COPY_ICON;
+        copy.classList.toggle("copied", ok);
+        copy.title = ok ? "Copied" : "Copy failed";
+        setTimeout(() => {
+          copy.innerHTML = COPY_ICON;
+          copy.classList.remove("copied");
+          copy.title = "Copy code";
+        }, 1500);
+      });
+    });
+    d.appendChild(copy);
     if (this.executable && this.lang === "python" && !ctx.reader) {
       const b = el("button", "cm-cell-run cm-no-reveal", this.running ? "◼ Running…" : this.noEval ? "eval: false" : "▶ Run");
       b.title = this.noEval ? "This cell has eval: false — it won't be run" : "Run cell (⌘↵)";
@@ -754,5 +773,39 @@ export class IncludeWidget extends WidgetType {
   }
   ignoreEvent() {
     return true;
+  }
+}
+
+const COPY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.8A1.3 1.3 0 0 0 9.2 2.5H3.8a1.3 1.3 0 0 0-1.3 1.3v5.4a1.3 1.3 0 0 0 1.3 1.3h1.7"/></svg>';
+const CHECK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg>';
+
+/** The code of the fenced block starting at `fencePos`, without `#|` cell-option lines. */
+export function cellCodeAt(view: EditorView, fencePos: number): string {
+  const doc = view.state.doc;
+  const open = doc.lineAt(Math.min(fencePos, doc.length));
+  const fence = /^\s*(`{3,}|~{3,})/.exec(open.text)?.[1] ?? "```";
+  const lines: string[] = [];
+  for (let n = open.number + 1; n <= doc.lines; n++) {
+    const t = doc.line(n).text;
+    if (t.trim().startsWith(fence[0].repeat(fence.length)) && !t.trim().slice(fence.length).trim()) break;
+    lines.push(t);
+  }
+  return codeBody(lines.join("\n"));
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
   }
 }

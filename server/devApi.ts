@@ -368,8 +368,7 @@ export function folioApi(opts: { defaultRoot?: string; kernelScript: string }): 
             case "/api/git/commit": {
               const { root, message } = await body(req);
               const cwd = allowed(root);
-              const add = await runGit(cwd, ["add", "-A"]);
-              if (!add.ok) return json(res, add);
+              // commits what is staged; the panel stages everything first for "Commit All"
               return json(res, await runGit(cwd, ["commit", "-m", String(message)]));
             }
             case "/api/git/identity": {
@@ -393,6 +392,49 @@ export function folioApi(opts: { defaultRoot?: string; kernelScript: string }): 
               if (remoteUrl) steps.push(["git", ["remote", "add", "origin", String(remoteUrl)]]);
               steps.push(["git", ["push", "-u", "origin", "HEAD"]]);
               streamSteps(id, cwd, steps);
+              return json(res, { ok: true });
+            }
+            case "/api/git/stage":
+            case "/api/git/unstage": {
+              const { root, paths } = await body(req);
+              const cwd = allowed(root);
+              const list: string[] = paths === "all" ? ["."] : (paths as string[]).map((p) => path.relative(cwd, allowed(path.join(cwd, p))));
+              if (url.pathname.endsWith("/stage")) return json(res, await runGit(cwd, ["add", "-A", "--", ...list]));
+              let r = await runGit(cwd, ["restore", "--staged", "--", ...list]);
+              if (!r.ok) r = await runGit(cwd, ["rm", "--cached", "-r", "-q", "--", ...list]); // no commits yet
+              return json(res, r);
+            }
+            case "/api/git/discard": {
+              const { root, tracked, untracked } = await body(req);
+              const cwd = allowed(root);
+              const rel = (ps: string[]) => ps.map((p) => path.relative(cwd, allowed(path.join(cwd, p))));
+              let out = "";
+              let ok = true;
+              if (tracked?.length) {
+                const r = await runGit(cwd, ["restore", "--staged", "--worktree", "--source=HEAD", "--", ...rel(tracked)]);
+                ok &&= r.ok;
+                out += r.output;
+              }
+              if (untracked?.length) {
+                const r = await runGit(cwd, ["clean", "-f", "-q", "--", ...rel(untracked)]);
+                ok &&= r.ok;
+                out += r.output;
+              }
+              return json(res, { ok, code: ok ? 0 : 1, output: out });
+            }
+            case "/api/git/log": {
+              const { root, limit } = await body(req);
+              const cwd = allowed(root);
+              const r = await runGit(cwd, ["log", "--topo-order", "--date=relative", `-n${Math.min(1000, Number(limit) || 200)}`, "--all", "--format=%H%x1f%P%x1f%an%x1f%ar%x1f%s%x1f%D"], false);
+              return json(res, { out: r.ok ? r.stdout : "" });
+            }
+            case "/api/rename": {
+              const { from, to } = await body(req);
+              const a = allowed(from);
+              const b = allowed(to);
+              if (fs.existsSync(b)) throw Object.assign(new Error(`${path.basename(b)} already exists`), { status: 409 });
+              fs.mkdirSync(path.dirname(b), { recursive: true });
+              fs.renameSync(a, b);
               return json(res, { ok: true });
             }
             case "/api/delete": {

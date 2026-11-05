@@ -133,6 +133,21 @@ export class HttpBackend implements Backend {
   gitPush(root: string, remoteUrl: string | null, onLog: (line: string) => void) {
     return this.proc("/api/git/push", { root, remoteUrl }, onLog);
   }
+  async gitStage(root: string, paths: string[] | "all") {
+    return (await this.api("/api/git/stage", { root, paths })) as ProcResult;
+  }
+  async gitUnstage(root: string, paths: string[] | "all") {
+    return (await this.api("/api/git/unstage", { root, paths })) as ProcResult;
+  }
+  async gitDiscard(root: string, tracked: string[], untracked: string[]) {
+    return (await this.api("/api/git/discard", { root, tracked, untracked })) as ProcResult;
+  }
+  async gitLog(root: string, limit: number) {
+    return ((await this.api("/api/git/log", { root, limit })) as { out: string }).out;
+  }
+  async renameFile(from: string, to: string) {
+    await this.api("/api/rename", { from, to });
+  }
   async openExternal(pathOrUrl: string) {
     window.open(pathOrUrl.startsWith("/") ? this.fileUrl(pathOrUrl) : pathOrUrl, "_blank");
   }

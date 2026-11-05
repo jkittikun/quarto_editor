@@ -194,3 +194,56 @@ export function removeChapter(yml: string, file: string): string {
 export function isInBook(info: ProjectInfo | null, file: string): boolean {
   return !!info && bookOrder(info).some((c) => c.file === file);
 }
+
+/**
+ * Rename a chapter entry in _quarto.yml by editing the text (comments kept). Only plain
+ * `- old` / `- href: old` list items are rewritten; returns the text unchanged otherwise.
+ */
+export function renameChapter(yml: string, oldFile: string, newFile: string): string {
+  const esc = oldFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^(\\s*-\\s+(?:href:\\s*)?)(["']?)${esc}\\2(\\s*(#.*)?)$`, "m");
+  return yml.replace(re, (_m, pre: string, q: string, post: string) => `${pre}${q}${newFile}${q}${post}`);
+}
+
+export interface TreeNode {
+  name: string;
+  path: string; // relative path ('' for root)
+  dirs: TreeNode[];
+  files: string[]; // relative paths
+}
+
+/** Build a folder tree (folders first, then files, both alphabetical) from relative paths. */
+export function fileTree(paths: string[]): TreeNode {
+  const root: TreeNode = { name: "", path: "", dirs: [], files: [] };
+  for (const p of paths) {
+    const parts = p.split("/");
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const dirPath = parts.slice(0, i + 1).join("/");
+      let next = node.dirs.find((d) => d.path === dirPath);
+      if (!next) {
+        next = { name: parts[i], path: dirPath, dirs: [], files: [] };
+        node.dirs.push(next);
+      }
+      node = next;
+    }
+    node.files.push(p);
+  }
+  const sort = (n: TreeNode) => {
+    n.dirs.sort((a, b) => a.name.localeCompare(b.name));
+    n.files.sort((a, b) => a.split("/").pop()!.localeCompare(b.split("/").pop()!));
+    n.dirs.forEach(sort);
+  };
+  sort(root);
+  return root;
+}
+
+/** True when a document is a Reveal.js presentation (front matter or project-level format). */
+export function isRevealDoc(src: string, projectFormats: string[]): boolean {
+  const head = src.slice(0, 4000);
+  const fm = head.startsWith("---") ? splitFrontMatter(head).meta : {};
+  const fmt = fm.format;
+  const names = typeof fmt === "string" ? [fmt] : fmt && typeof fmt === "object" ? Object.keys(fmt) : [];
+  if (names.length) return names.some((n) => n.startsWith("revealjs"));
+  return projectFormats.some((n) => n.startsWith("revealjs"));
+}

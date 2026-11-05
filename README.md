@@ -120,8 +120,13 @@ when you launch it from Finder.
 * **Source control** (branch icon in the top bar, ⌘⇧G): a right-hand panel that uses the git
   installed on your Mac, with your usual GitHub login (SSH key or Keychain).
   * **Initialize repository** creates a `.gitignore` for build output, `.folio/` and `.venv/`.
-  * The panel lists changed files, and has a commit box (⌘↵ to commit) and **Push**. When there's no
-    remote yet, Push shows **Publish…** and asks for a URL.
+  * It works like VS Code's source control: **Staged Changes** and **Changes** groups, with
+    ＋ Stage, − Unstage and ↶ Discard on each file and Stage All / Unstage All / Discard All on each
+    group.
+  * The commit box commits the staged files, or everything when nothing is staged (⌘↵ to commit).
+    **Push** sends your commits; when no remote is set yet, the button reads **Connect
+    repository…** and asks for a URL.
+  * A **History** section shows the commit graph with branch and tag labels.
   * It also shows a live diff of the open chapter against the last commit; click a change to jump to
     it.
 * **Line numbers:** toggle with the # button in the top bar (⌘⇧L).
@@ -129,9 +134,15 @@ when you launch it from Finder.
   the sidebar, numbering and bibliography reload, and YAML errors show in the status bar.
 * **Empty folder:** opening a folder with no Quarto files shows a start screen where you can create a
   **Book**, a **Presentation** (Reveal.js) or a **Single document**.
-* **Delete a file:** hover over a file in the sidebar and click 🗑, or right-click → **Delete…**. After
-  you confirm, the file goes to the macOS Trash (in browser mode, to `.folio/trash/`). In a book, you
-  can also remove it from `_quarto.yml`.
+* **Files in the sidebar:** **ALL FILES** shows every `.qmd`/`.md` in the folder and its
+  sub-folders as a tree. Right-click a file for **Duplicate** (⌘D), **Rename…** (↩) and
+  **Delete** (⌘⌫), or select it and press Enter to rename it in place, as in Finder.
+  * In a book, renaming updates `_quarto.yml`, and a duplicate is added right after the original.
+  * Delete moves the file to the macOS Trash (in browser mode, to `.folio/trash/`).
+  * ↑/↓ move through the files.
+* **Present** (▶ in the top bar, ⌘⇧P, shown for `format: revealjs` documents): renders the slides with
+  Quarto and shows the real Reveal.js presentation full-screen. Press Esc to exit.
+* **Copy code:** every code block has a copy button that copies the code without its `#|` options.
 * **Python interpreter:** the bottom bar shows the Python that runs your cells, for example
   `Python 3.12.3 (.venv)`. Click it to pick another one. Like VS Code, Folio detects virtual
   environments in the project (`.venv`, `venv`, `env`, or any folder with `pyvenv.cfg`), conda
@@ -168,6 +179,8 @@ when you launch it from Finder.
 | ⌘⌥R | Toggle Reader |
 | ⌘⇧G | Source control panel |
 | ⌘⇧L | Line numbers |
+| ⌘⇧P | Present (Reveal.js) |
+| ↩ / ⌘D / ⌘⌫ | Rename / duplicate / delete the selected file (sidebar) |
 | ⌘+ / ⌘− | Larger / smaller text (`A+` / `A−`) |
 | ⌘B / ⌘I / ⌘E | Bold / italic / inline code |
 | ⌘-click | Follow a cross-reference or link |

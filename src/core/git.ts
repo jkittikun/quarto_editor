@@ -119,3 +119,94 @@ export function mergeGitignore(existing: string, entries: string[]): string {
 export function validVenvName(name: string): boolean {
   return /^[\w.-]+$/.test(name) && name !== "." && name !== "..";
 }
+
+// ---- history graph ----------------------------------------------------------------------------
+
+export interface LogCommit {
+  hash: string;
+  parents: string[];
+  author: string;
+  date: string;
+  subject: string;
+  refs: string[];
+}
+
+/** Parse `git log --format=%H%x1f%P%x1f%an%x1f%ar%x1f%s%x1f%D` output (one commit per line). */
+export function parseGitLog(out: string): LogCommit[] {
+  return out
+    .split("\n")
+    .filter((l) => l.includes("\x1f"))
+    .map((l) => {
+      const [hash, parents, author, date, subject, refs] = l.split("\x1f");
+      return {
+        hash,
+        parents: parents ? parents.split(" ").filter(Boolean) : [],
+        author,
+        date,
+        subject,
+        refs: refs ? refs.split(", ").map((r) => r.replace(/^HEAD -> /, "")).filter((r) => r && r !== "HEAD") : [],
+      };
+    });
+}
+
+export interface GraphRow {
+  commit: LogCommit;
+  col: number; // lane of the commit dot
+  /** Lanes entering from above: [fromLane, toLane] (toLane = col when converging on this commit). */
+  top: [number, number][];
+  /** Lanes leaving below: [fromLane, toLane] (fromLane = col for edges to parents). */
+  bottom: [number, number][];
+  width: number; // number of lanes in use for this row
+}
+
+/** Assign lanes for a commit graph in topological order (newest first), like `git log --graph`. */
+export function buildGraph(commits: LogCommit[]): GraphRow[] {
+  const lanes: (string | null)[] = [];
+  const rows: GraphRow[] = [];
+  const free = () => {
+    const i = lanes.indexOf(null);
+    return i >= 0 ? i : lanes.push(null) - 1;
+  };
+  for (const c of commits) {
+    let col = lanes.indexOf(c.hash);
+    const isNew = col < 0; // no child above points to this commit (a branch tip)
+    if (isNew) {
+      col = free();
+      lanes[col] = c.hash;
+    }
+    const top: [number, number][] = [];
+    lanes.forEach((h, i) => {
+      if (h === null) return;
+      // a lane that was waiting for this commit converges into its dot (only if it existed above)
+      if (h === c.hash) {
+        if (!(isNew && i === col)) top.push([i, col]);
+      } else top.push([i, i]);
+    });
+    // lanes expecting this commit are now consumed
+    lanes.forEach((h, i) => {
+      if (h === c.hash) lanes[i] = null;
+    });
+    const bottom: [number, number][] = [];
+    c.parents.forEach((p, k) => {
+      let j = lanes.indexOf(p);
+      if (j > col && k === 0 && lanes[col] === null) {
+        // first parent already expected further right: pull that line into this lane
+        lanes[j] = null;
+        lanes[col] = p;
+        bottom.push([j, col]);
+        j = col;
+      } else if (j < 0) {
+        j = k === 0 && lanes[col] === null ? col : free();
+        lanes[j] = p;
+      }
+      bottom.push([col, j]);
+    });
+    lanes.forEach((h, i) => {
+      if (h !== null && !bottom.some(([from, to]) => to === i || from === i)) bottom.push([i, i]);
+    });
+    while (lanes.length && lanes[lanes.length - 1] === null) lanes.pop();
+    const width = Math.max(col + 1, ...top.map(([a, b]) => Math.max(a, b) + 1), ...bottom.map(([a, b]) => Math.max(a, b) + 1));
+    rows.push({ commit: c, col, top, bottom, width });
+  }
+  return rows;
+}

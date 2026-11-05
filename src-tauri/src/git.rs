@@ -177,11 +177,8 @@ pub fn init(root: &Path) -> ProcResult {
     r
 }
 
+/// Commit what is staged (the panel stages everything first for "Commit All").
 pub fn commit(root: &Path, message: &str) -> ProcResult {
-    let add = result(git(root, &["add", "-A"]));
-    if !add.ok {
-        return add;
-    }
     result(git(root, &["commit", "-m", message]))
 }
 
@@ -264,6 +261,62 @@ pub fn run_steps(app: &AppHandle, req: &str, cwd: &Path, steps: &[(String, Vec<S
     ProcResult { ok: true, code: Some(0), output }
 }
 
+fn path_args(paths: &Option<Vec<String>>) -> Vec<String> {
+    match paths {
+        None => vec![".".into()],
+        Some(v) => v.clone(),
+    }
+}
+
+pub fn stage(root: &Path, paths: &Option<Vec<String>>) -> ProcResult {
+    let mut args: Vec<String> = vec!["add".into(), "-A".into(), "--".into()];
+    args.extend(path_args(paths));
+    result(git(root, &args.iter().map(String::as_str).collect::<Vec<_>>()))
+}
+
+pub fn unstage(root: &Path, paths: &Option<Vec<String>>) -> ProcResult {
+    let mut args: Vec<String> = vec!["restore".into(), "--staged".into(), "--".into()];
+    args.extend(path_args(paths));
+    let r = result(git(root, &args.iter().map(String::as_str).collect::<Vec<_>>()));
+    if r.ok {
+        return r;
+    }
+    // no commits yet: unstage by removing from the index
+    let mut args: Vec<String> = vec!["rm".into(), "--cached".into(), "-r".into(), "-q".into(), "--".into()];
+    args.extend(path_args(paths));
+    result(git(root, &args.iter().map(String::as_str).collect::<Vec<_>>()))
+}
+
+pub fn discard(root: &Path, tracked: &[String], untracked: &[String]) -> ProcResult {
+    let mut out = ProcResult { ok: true, code: Some(0), output: String::new() };
+    if !tracked.is_empty() {
+        let mut args = vec!["restore", "--staged", "--worktree", "--source=HEAD", "--"];
+        args.extend(tracked.iter().map(String::as_str));
+        let r = result(git(root, &args));
+        out.ok &= r.ok;
+        out.output += &r.output;
+    }
+    if !untracked.is_empty() {
+        let mut args = vec!["clean", "-f", "-q", "--"];
+        args.extend(untracked.iter().map(String::as_str));
+        let r = result(git(root, &args));
+        out.ok &= r.ok;
+        out.output += &r.output;
+    }
+    if !out.ok {
+        out.code = Some(1);
+    }
+    out
+}
+
+pub fn log(root: &Path, limit: u32) -> String {
+    let n = format!("-n{}", limit.clamp(1, 1000));
+    match git(root, &["log", "--topo-order", "--date=relative", &n, "--all", "--format=%H%x1f%P%x1f%an%x1f%ar%x1f%s%x1f%D"]) {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        _ => String::new(),
+    }
+}
+
 pub fn valid_venv_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
 }
@@ -317,9 +370,23 @@ mod tests {
         let st = status(&dir);
         assert!(st.is_repo && !st.has_commits);
         assert!(st.files.iter().any(|f| f.path == "a.qmd" && f.index == "?"));
+        assert!(stage(&dir, &None).ok);
         assert!(commit(&dir, "first").ok);
         assert_eq!(show_head(&dir, "a.qmd").as_deref(), Some("# A\n"));
         assert_eq!(show_head(&dir, "missing.qmd"), None);
+        // stage / unstage / discard / log
+        std::fs::write(dir.join("a.qmd"), "# A changed\n").unwrap();
+        std::fs::write(dir.join("b.qmd"), "# B\n").unwrap();
+        assert!(stage(&dir, &Some(vec!["a.qmd".into()])).ok);
+        let st = status(&dir);
+        assert!(st.files.iter().any(|f| f.path == "a.qmd" && f.index == "M"));
+        assert!(unstage(&dir, &None).ok);
+        let st = status(&dir);
+        assert!(st.files.iter().any(|f| f.path == "a.qmd" && f.index == "." && f.worktree == "M"));
+        assert!(discard(&dir, &["a.qmd".into()], &["b.qmd".into()]).ok);
+        assert_eq!(std::fs::read_to_string(dir.join("a.qmd")).unwrap(), "# A\n");
+        assert!(!dir.join("b.qmd").exists());
+        assert!(log(&dir, 10).contains("first"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

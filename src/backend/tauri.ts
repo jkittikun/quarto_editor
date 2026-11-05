@@ -97,6 +97,21 @@ export class TauriBackend implements Backend {
   gitPush(root: string, remoteUrl: string | null, onLog: (line: string) => void) {
     return this.proc<ProcResult>("git_push", { root, remoteUrl }, onLog);
   }
+  gitStage(root: string, paths: string[] | "all") {
+    return invoke<ProcResult>("git_stage", { root, paths: paths === "all" ? null : paths });
+  }
+  gitUnstage(root: string, paths: string[] | "all") {
+    return invoke<ProcResult>("git_unstage", { root, paths: paths === "all" ? null : paths });
+  }
+  gitDiscard(root: string, tracked: string[], untracked: string[]) {
+    return invoke<ProcResult>("git_discard", { root, tracked, untracked });
+  }
+  gitLog(root: string, limit: number) {
+    return invoke<string>("git_log", { root, limit });
+  }
+  renameFile(from: string, to: string) {
+    return invoke<void>("rename_file", { from, to });
+  }
   openExternal(pathOrUrl: string) {
     return invoke<void>("open_external", { target: pathOrUrl });
   }

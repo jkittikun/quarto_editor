@@ -213,6 +213,70 @@ async fn git_push(app: AppHandle, req: String, root: String, remote_url: Option<
         .map_err(|e| CmdError(e.to_string()))
 }
 
+fn rel_paths(state: &AppState, root: &std::path::Path, paths: &[String]) -> CmdResult<Vec<String>> {
+    paths
+        .iter()
+        .map(|p| {
+            let abs = checked(state, &root.join(p).to_string_lossy())?;
+            Ok(abs.strip_prefix(root).map(|r| r.to_string_lossy().into_owned()).unwrap_or_else(|_| p.clone()))
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn git_stage(app: AppHandle, root: String, paths: Option<Vec<String>>) -> CmdResult<git::ProcResult> {
+    let state = app.state::<AppState>();
+    let root = checked(&state, &root)?;
+    let paths = match paths {
+        Some(p) => Some(rel_paths(&state, &root, &p)?),
+        None => None,
+    };
+    tauri::async_runtime::spawn_blocking(move || git::stage(&root, &paths)).await.map_err(|e| CmdError(e.to_string()))
+}
+
+#[tauri::command]
+async fn git_unstage(app: AppHandle, root: String, paths: Option<Vec<String>>) -> CmdResult<git::ProcResult> {
+    let state = app.state::<AppState>();
+    let root = checked(&state, &root)?;
+    let paths = match paths {
+        Some(p) => Some(rel_paths(&state, &root, &p)?),
+        None => None,
+    };
+    tauri::async_runtime::spawn_blocking(move || git::unstage(&root, &paths)).await.map_err(|e| CmdError(e.to_string()))
+}
+
+#[tauri::command]
+async fn git_discard(app: AppHandle, root: String, tracked: Vec<String>, untracked: Vec<String>) -> CmdResult<git::ProcResult> {
+    let state = app.state::<AppState>();
+    let root = checked(&state, &root)?;
+    let tracked = rel_paths(&state, &root, &tracked)?;
+    let untracked = rel_paths(&state, &root, &untracked)?;
+    tauri::async_runtime::spawn_blocking(move || git::discard(&root, &tracked, &untracked))
+        .await
+        .map_err(|e| CmdError(e.to_string()))
+}
+
+#[tauri::command]
+async fn git_log(app: AppHandle, root: String, limit: u32) -> CmdResult<String> {
+    let root = checked(&app.state::<AppState>(), &root)?;
+    tauri::async_runtime::spawn_blocking(move || git::log(&root, limit)).await.map_err(|e| CmdError(e.to_string()))
+}
+
+/// Rename/move a file inside the opened project; never overwrites.
+#[tauri::command]
+fn rename_file(state: State<'_, AppState>, from: String, to: String) -> CmdResult<()> {
+    let a = checked(&state, &from)?;
+    let b = checked(&state, &to)?;
+    if b.exists() {
+        return Err(CmdError(format!("{} already exists", b.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())));
+    }
+    if let Some(parent) = b.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(a, b)?;
+    Ok(())
+}
+
 /// Create a virtual environment in the project (fixed commands: venv, then optional pip install).
 #[tauri::command]
 async fn create_venv(
@@ -310,7 +374,12 @@ pub fn run() {
             git_set_identity,
             git_show_head,
             git_push,
-            create_venv
+            create_venv,
+            git_stage,
+            git_unstage,
+            git_discard,
+            git_log,
+            rename_file
         ])
         .build(tauri::generate_context!())
         .expect("error while building Folio")

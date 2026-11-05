@@ -228,8 +228,10 @@ try {
 
   // ---------------------------------------------------------------- 4d. delete a chapter
   const ymlBeforeDelete = readFileSync(join(book, "_quarto.yml"), "utf8");
-  await page.locator("#outline li.file-row", { hasText: "Fresh Chapter" }).hover();
-  await page.locator("#outline li.file-row", { hasText: "Fresh Chapter" }).locator(".row-delete").click();
+  ok((await page.locator("#outline .row-delete").count()) === 0, "no trash icons in the sidebar");
+  await page.locator("#outline a.chapter", { hasText: "Fresh Chapter" }).first().click({ button: "right" });
+  ok((await page.locator(".ctx-menu .ctx-item").allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim()).join("|") === "Duplicate ⌘D|Rename… ↩|Delete ⌘⌫", "context menu shows Duplicate / Rename… / Delete with shortcuts");
+  await page.click(".ctx-menu [data-item=delete]");
   await page.waitForSelector(".modal-box [data-confirm]");
   ok(await page.locator(".modal-box input[name=confirm-check]").isChecked(), "delete dialog offers removing the chapter from _quarto.yml");
   await shot("delete-confirm");
@@ -305,8 +307,9 @@ try {
   await page.locator(".cm-content").first().click();
   await page.keyboard.press("End");
   await page.keyboard.type(" edited");
-  await page.locator("#outline li.file-row", { hasText: "notes.qmd" }).hover();
-  await page.locator("#outline li.file-row", { hasText: "notes.qmd" }).locator(".row-delete").click();
+  ok(await page.locator("#edit-config").isHidden(), "settings icon is hidden when there is no _quarto.yml");
+  await page.locator("#outline a.chapter", { hasText: "notes.qmd" }).first().click({ button: "right" });
+  await page.click(".ctx-menu [data-item=delete]");
   await page.click(".modal-box [data-confirm]");
   ok(await waitFor(() => page.locator("#start-panel").isVisible()), "deleting the only file returns to the start page");
   ok(await page.locator("#editor").isHidden(), "deleted file's content is no longer shown");
@@ -362,6 +365,126 @@ try {
   ok(execSync("git log --oneline main", { cwd: bare }).toString().includes("First draft"), "remote has the commit");
   await page.click("#toggle-scm");
   await page.click("#log-close");
+
+  // ---------------------------------------------------------------- 4j. sidebar: ALL FILES, duplicate, rename, highlight
+  await page.evaluate(() => folio.openFile(folio.abs("methods.qmd")));
+  ok(await page.locator("#edit-config").isVisible(), "settings icon is shown for a project with _quarto.yml");
+  const allFiles = await page.locator("#outline .section-title", { hasText: /all files/i }).count();
+  ok(allFiles === 1 && (await page.locator('#outline ul.tree a.chapter[data-file="intro.qmd"]').count()) === 1, "ALL FILES lists every .qmd including book chapters");
+  ok((await page.locator('#outline ul.tree .dir[data-dir="parts"]').count()) === 1, "sub-folders appear as a tree");
+  const ymlBeforeDup = readFileSync(join(book, "_quarto.yml"), "utf8");
+  await page.locator('#outline a.chapter[data-file="methods.qmd"]').first().click({ button: "right" });
+  await page.click(".ctx-menu [data-item=duplicate]");
+  ok(await waitFor(() => existsSync(join(book, "methods copy.qmd"))), "Duplicate creates 'methods copy.qmd'");
+  ok(await waitFor(() => readFileSync(join(book, "_quarto.yml"), "utf8") === ymlBeforeDup.replace("        - methods.qmd\n", "        - methods.qmd\n        - methods copy.qmd\n")), "the copy is added to the book right after the original");
+  // duplicate goes straight into rename: type a new name
+  await page.waitForSelector("#outline .rename-input");
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("analysis");
+  await page.keyboard.press("Enter");
+  ok(await waitFor(() => existsSync(join(book, "analysis.qmd")) && !existsSync(join(book, "methods copy.qmd"))), "inline rename renames the file on disk");
+  ok(await waitFor(() => readFileSync(join(book, "_quarto.yml"), "utf8") === ymlBeforeDup.replace("        - methods.qmd\n", "        - methods.qmd\n        - analysis.qmd\n")), "rename updates _quarto.yml (only that line)");
+  // Enter on the selected file renames it (Finder-style)
+  await page.locator('#outline a.chapter[data-file="analysis.qmd"]').first().click();
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("#outline .rename-input");
+  await page.keyboard.press("Escape");
+  ok((await page.locator("#outline .rename-input").count()) === 0 && existsSync(join(book, "analysis.qmd")), "Enter starts rename, Esc cancels");
+  // highlight: accent while the sidebar has focus, grey after clicking into the editor
+  await page.locator('#outline a.chapter[data-file="analysis.qmd"]').first().click();
+  const bgFocused = await page.locator("#outline a.chapter.selected").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+  await page.locator(".cm-content").first().click({ position: { x: 30, y: 30 } });
+  const bgBlurred = await page.locator("#outline a.chapter.selected").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+  ok(bgFocused !== bgBlurred && !/rgba\(0, 0, 0, 0\)/.test(bgBlurred), `selection is accent when focused (${bgFocused}) and grey otherwise (${bgBlurred})`);
+  // keyboard: arrow down selects and opens the next file
+  await page.locator('#outline a.chapter[data-file="analysis.qmd"]').first().click();
+  await page.keyboard.press("ArrowUp");
+  ok(await waitFor(() => page.evaluate(() => folio.rel(folio.current.path) === "methods.qmd")), "↑ selects and opens the previous file");
+
+  // ---------------------------------------------------------------- 4k. copy button, selection visible in code
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.locator(".cm-cell-head", { hasText: "fig-sine" }).locator(".cm-cell-copy").dispatchEvent("mousedown");
+  const clip = await page.evaluate(() => navigator.clipboard.readText());
+  ok(clip.startsWith("import numpy as np") && !clip.includes("#|"), "copy button copies the code without #| lines");
+  // select a word inside a code cell and check the selection layer shows through
+  const line = page.locator(".cm-line.cm-code", { hasText: "x = np.linspace" }).first();
+  await line.scrollIntoViewIfNeeded();
+  await sleep(200);
+  const box = await line.boundingBox();
+  await page.mouse.click(box.x + box.width - 20, box.y + box.height / 2); // focus the editor first
+  await sleep(150);
+  const before = await page.screenshot({ clip: { x: box.x + 20, y: box.y + 4, width: 60, height: 10 } });
+  await page.mouse.move(box.x + 18, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 120, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await sleep(150);
+  const after = await page.screenshot({ clip: { x: box.x + 20, y: box.y + 4, width: 60, height: 10 } });
+  ok(!before.equals(after), "selected text inside a code block is visibly highlighted");
+
+  // ---------------------------------------------------------------- 4l. source control: stage, discard, history, connect
+  await page.click("#toggle-scm");
+  await page.waitForSelector("#scm-panel [data-group=changes]");
+  // the push button reads "Connect repository…" until a remote exists → the earlier publish added one, so check via a fresh repo below
+  writeFileSync(join(book, "summary.qmd"), readFileSync(join(book, "summary.qmd"), "utf8") + "\nStaged line.\n");
+  writeFileSync(join(book, "scratch.qmd"), "# Scratch\n");
+  await page.evaluate(() => folio.scm.refresh(true));
+  await page.locator('.scm-file[data-path="summary.qmd"] [data-act=stage]').dispatchEvent("click");
+  ok(await waitFor(() => page.locator('[data-list=staged] .scm-file[data-path="summary.qmd"]').count().then((n) => n === 1)), "＋ moves a file to Staged Changes");
+  ok((await page.locator("#scm-panel [data-scm=commit]").innerText()) === "Commit", "with staged files the button commits only those");
+  await page.fill("#scm-message", "Only summary");
+  await page.click("#scm-panel [data-scm=commit]");
+  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: gitConfig };
+  ok(await waitFor(() => execSync("git show --stat --format=%s HEAD", { cwd: book, env: gitEnv }).toString().startsWith("Only summary")), "commit created");
+  const committed = execSync("git show --stat --format= HEAD", { cwd: book, env: gitEnv }).toString();
+  ok(committed.includes("summary.qmd") && !committed.includes("scratch.qmd") && !committed.includes("intro.qmd"), "only the staged file was committed");
+  // discard: untracked file is deleted, modified file restored
+  await page.evaluate(() => folio.scm.refresh(true));
+  await page.locator('.scm-file[data-path="scratch.qmd"] [data-act=discard]').dispatchEvent("click");
+  await page.click(".modal-box [data-confirm]");
+  ok(await waitFor(() => !existsSync(join(book, "scratch.qmd"))), "Discard deletes an untracked file");
+  const introOnDisk = readFileSync(join(book, "intro.qmd"), "utf8");
+  await page.evaluate(() => folio.scm.refresh(true));
+  await page.locator('.scm-file[data-path="intro.qmd"] [data-act=discard]').dispatchEvent("click");
+  await page.click(".modal-box [data-confirm]");
+  ok(await waitFor(() => readFileSync(join(book, "intro.qmd"), "utf8") !== introOnDisk && !readFileSync(join(book, "intro.qmd"), "utf8").includes("A DIFF LINE")), "Discard restores a modified file to the last commit");
+  // stage all / unstage all
+  writeFileSync(join(book, "a1.qmd"), "# A1\n");
+  await page.evaluate(() => folio.scm.refresh(true));
+  await page.locator("[data-group=changes] [data-act=stage-all]").dispatchEvent("click");
+  ok(await waitFor(() => page.locator("[data-list=staged] .scm-file").count().then((n) => n >= 1)), "Stage All stages everything");
+  await page.locator("[data-group=staged] [data-act=unstage-all]").dispatchEvent("click");
+  ok(await waitFor(() => page.locator("[data-list=staged]").count().then((n) => n === 0)), "Unstage All moves everything back");
+  ok(await waitFor(() => page.locator(".scm-commit-row svg.scm-graph").count().then((n) => n >= 2)), "History shows commits with a graph");
+  await shot("scm-graph");
+  await page.click("#toggle-scm");
+  // a project without a remote shows "Connect repository…"
+  await page.evaluate((dir) => folio.openProject(dir), empty);
+  await waitFor(() => page.evaluate(() => !!folio.current));
+  await page.click("#toggle-scm");
+  await page.click("#scm-panel [data-scm=init]");
+  await page.waitForSelector("#scm-message");
+  await page.fill("#scm-message", "init");
+  await page.click("#scm-panel [data-scm=commit]");
+  ok(await waitFor(() => page.locator("#scm-panel [data-scm=push]").innerText().then((t) => t.includes("Connect repository"))), "no remote → 'Connect repository…'");
+  await page.click("#toggle-scm");
+
+  // ---------------------------------------------------------------- 4m. present (Reveal.js)
+  ok(await page.locator("#present-btn").isHidden(), "▶ Present is hidden for non-presentations");
+  if (FAKE_QUARTO) {
+    const slidesDir = join(work, "slides");
+    cpSync(join(ROOT, "examples/slides"), slidesDir, { recursive: true });
+    await page.evaluate((dir) => folio.openProject(dir), slidesDir);
+    await waitFor(() => page.evaluate(() => !!folio.current));
+    ok(await waitFor(() => page.locator("#present-btn").isVisible(), 3000), "▶ Present appears for a Reveal.js document");
+    await page.click("#present-btn");
+    ok(await waitFor(() => page.locator("#present").isVisible(), 15000), "Present renders and opens the slides full-screen");
+    ok(await waitFor(() => page.frameLocator("#present-frame").locator(".reveal").count().then((n) => n === 1), 5000), "the rendered Reveal.js output is shown");
+    await page.evaluate(() => folio.closePresentation());
+    ok(await page.locator("#present").isHidden(), "Esc / ✕ closes the presentation");
+  }
+  await page.evaluate((dir) => folio.openProject(dir), book);
+  await waitFor(() => page.evaluate(() => !!folio.current));
 
   // ---------------------------------------------------------------- 5. quarto render
   if (hasQuarto) {

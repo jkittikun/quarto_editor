@@ -1,7 +1,7 @@
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { type Backend, type KernelMsg, type PythonEnv, joinPath, dirname, relativeTo } from "../backend/types";
-import { parseQuartoYml, bookOrder, insertChapter, removeChapter, isInBook, type ProjectInfo } from "../core/project";
+import { parseQuartoYml, bookOrder, insertChapter, removeChapter, isInBook, renameChapter, fileTree, isRevealDoc, type ProjectInfo, type TreeNode } from "../core/project";
 import { projectTemplate, newDocument, type TemplateKind } from "../core/templates";
 import { defaultPython } from "../core/python";
 import { parseFreeze, freezePath, matchFrozen } from "../core/freeze";
@@ -114,6 +114,7 @@ export class App {
     const ymlName = this.files.find((f) => f === "_quarto.yml" || f === "_quarto.yaml");
     this.info = ymlName ? parseQuartoYml(await this.backend.readFile(this.abs(ymlName))) : null;
     if (this.info?.error) this.setSaveStatus(`_quarto.yml: ${this.info.error}`, true);
+    $("#edit-config").hidden = !ymlName;
     const isBook = this.info?.type === "book";
     $("#render-chapter").textContent = isBook ? "Render chapter" : "Render";
     $("#render-book").textContent = isBook ? "Render book" : "Render project";
@@ -179,11 +180,13 @@ export class App {
     }
     this.current = doc;
     ctx.file = path;
+    this.selected = this.rel(path);
     this.hideStartPanel();
     localStorage.setItem(`folio.lastFile:${this.root}`, this.rel(path));
     this.view.setState(doc.state);
     this.applyViewMode();
     this.applyLineNumbers();
+    this.updatePresentButton();
     if (this.scm?.open) {
       this.scm.render();
       this.scm.renderDiff();
@@ -482,6 +485,29 @@ export class App {
     await this.afterFileGone(path);
   }
 
+  /** Re-read files changed behind Folio's back (e.g. git discard) into open documents. */
+  async reloadFromDisk(paths: string[]) {
+    this.files = await this.backend.openProject(this.root);
+    for (const p of paths) {
+      const doc = this.docs.get(p);
+      if (!doc) continue;
+      if (!(await this.backend.exists(p))) {
+        await this.afterFileGone(p);
+        continue;
+      }
+      const text = await this.backend.readFile(p);
+      doc.savedText = text;
+      doc.dirty = false;
+      const st = doc === this.current ? this.view.state : doc.state;
+      if (st.doc.toString() === text) continue;
+      const tr = st.update({ changes: { from: 0, to: st.doc.length, insert: text } });
+      if (doc === this.current) this.view.dispatch(tr);
+      else doc.state = tr.state;
+      if (DOC_EXT.test(p)) this.docsText.set(this.rel(p), text);
+    }
+    this.renderSidebar();
+  }
+
   hasQuartoFiles() {
     return this.files.some((f) => /^_quarto\.ya?ml$/.test(f) || DOC_EXT.test(f));
   }
@@ -516,22 +542,38 @@ export class App {
 
   showFileMenu(rel: string, x: number, y: number) {
     document.querySelector(".ctx-menu")?.remove();
-    const menu = h("div", { class: "ctx-menu" });
-    const item = (label: string, fn: () => void, cls = "") => {
-      const b = h("button", { class: cls }, label);
+    const menu = h("div", { class: "ctx-menu", role: "menu" });
+    const close = () => {
+      menu.remove();
+      document.removeEventListener("keydown", onKey, true);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+      }
+    };
+    const item = (label: string, keys: string, fn: () => void, cls = "") => {
+      const b = h("button", { class: `ctx-item ${cls}`, role: "menuitem", "data-item": label.replace(/…$/, "").toLowerCase() });
+      b.append(h("span", {}, label), h("span", { class: "ctx-keys" }, keys));
       b.onclick = () => {
-        menu.remove();
+        close();
         fn();
       };
       menu.appendChild(b);
     };
-    item("Open", () => this.openFile(this.abs(rel)));
-    item("Delete…", () => this.deleteFile(rel), "danger-text");
-    menu.style.left = `${x}px`;
-    menu.style.top = `${y}px`;
+    item("Duplicate", "⌘D", () => this.duplicateFile(rel));
+    item("Rename…", "↩", () => this.startRename(rel));
+    menu.appendChild(h("div", { class: "ctx-sep" }));
+    item("Delete", "⌘⌫", () => this.deleteFile(rel), "danger-text");
     document.body.appendChild(menu);
-    setTimeout(() => document.addEventListener("mousedown", (e) => !menu.contains(e.target as Node) && menu.remove(), { once: true }));
+    const r = menu.getBoundingClientRect();
+    menu.style.left = `${Math.min(x, window.innerWidth - r.width - 8)}px`;
+    menu.style.top = `${Math.min(y, window.innerHeight - r.height - 8)}px`;
+    document.addEventListener("keydown", onKey, true);
+    setTimeout(() => document.addEventListener("mousedown", (e) => !menu.contains(e.target as Node) && close(), { once: true }));
   }
+
 
   // ---- Python interpreter ------------------------------------------------------
 
@@ -701,6 +743,7 @@ export class App {
     this.saveSoon();
     this.reindexSoon();
     this.scm?.diffSoon();
+    this.updatePresentSoon();
     this.updateStatusSoon();
   }
 
@@ -892,6 +935,53 @@ export class App {
   // Rendering with quarto
   // -------------------------------------------------------------------------
 
+  /** Show ▶ Present only for Reveal.js documents. */
+  updatePresentButton() {
+    const show = !!this.current && fileKind(this.current.path) === "markdown" && isRevealDoc(this.view.state.doc.toString(), ctx.projectFormats);
+    $("#present-btn").hidden = !show;
+  }
+
+  /** Render the slides with Quarto, then show the real Reveal.js output full-screen inside Folio. */
+  async present() {
+    if (!this.current || $("#present-btn").hidden) return;
+    const file = this.current.path;
+    await this.flushSave(this.current);
+    const log = $("#log");
+    $("#log-panel").hidden = false;
+    $("#log-title").textContent = `Preparing slides: ${this.rel(file)}…`;
+    log.textContent = "";
+    const res = await this.backend.render(this.root, file, (line) => {
+      log.textContent += line + "\n";
+      log.scrollTop = log.scrollHeight;
+    }, { to: "revealjs", python: this.effectivePython()?.path });
+    if (!res.ok) {
+      $("#log-title").textContent = "Couldn't render the slides";
+      return;
+    }
+    $("#log-title").textContent = "Slides ready";
+    $("#log-panel").hidden = true;
+    const out = res.output ?? file.replace(/\.[^./]+$/, ".html");
+    const overlay = $("#present");
+    const frame = $<HTMLIFrameElement>("#present-frame");
+    frame.src = this.backend.fileUrl(out) + `?t=${Date.now()}`;
+    overlay.hidden = false;
+    frame.onload = () => frame.contentWindow?.focus();
+    try {
+      await overlay.requestFullscreen?.();
+    } catch {
+      /* full screen not available: the overlay still fills the window */
+    }
+  }
+
+  closePresentation() {
+    const overlay = $("#present");
+    if (overlay.hidden) return;
+    overlay.hidden = true;
+    $<HTMLIFrameElement>("#present-frame").src = "about:blank";
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    this.view.focus();
+  }
+
   async exportPdf() {
     if (!this.root) return;
     const book = this.info?.type === "book";
@@ -981,6 +1071,12 @@ export class App {
     $("#run-all").onclick = () => this.runAll();
     $("#export-pdf").onclick = () => this.exportPdf();
     $("#toggle-lines").onclick = () => this.toggleLineNumbers();
+    $("#outline").addEventListener("keydown", (e) => this.onSidebarKey(e));
+    $("#present-btn").onclick = () => this.present();
+    $("#present-close").onclick = () => this.closePresentation();
+    document.addEventListener("fullscreenchange", () => {
+      if (!document.fullscreenElement) this.closePresentation();
+    });
     this.viewMode = this.loadViewMode();
     ctx.reader = this.viewMode === "reader";
     for (const b of document.querySelectorAll<HTMLButtonElement>("#view-switch [data-mode]")) {
@@ -1029,6 +1125,12 @@ export class App {
       } else if (mod && !e.shiftKey && !e.altKey && ["1", "2", "3"].includes(e.key)) {
         e.preventDefault();
         this.setViewMode((["edit", "source", "reader"] as const)[+e.key - 1]);
+      } else if (e.key === "Escape" && !$("#present").hidden) {
+        e.preventDefault();
+        this.closePresentation();
+      } else if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        this.present();
       } else if (mod && e.shiftKey && e.key.toLowerCase() === "g") {
         e.preventDefault();
         this.scm.toggle();
@@ -1059,6 +1161,7 @@ export class App {
     el.classList.toggle("warn", warn);
   }
 
+  private updatePresentSoon = debounce(() => this.updatePresentButton(), 500);
   private updateStatusSoon = debounce(() => this.updateStatus(), 400);
   updateStatus() {
     const text = this.view.state.doc.toString();
@@ -1083,84 +1186,271 @@ export class App {
     return `${ch?.number ? `<span class="num">${escapeHtml(ch.number)}</span>` : ""}<span class="title">${md(title)}</span>`;
   }
 
+  /** Sidebar selection (Finder-like): the file keyboard actions apply to. */
+  selected: string | null = null;
+  /** Folders collapsed in the ALL FILES tree (kept for this session only). */
+  private collapsedDirs = new Set<string>();
+
+  private sidebarRendering = false;
+
   renderSidebar() {
     const nav = $("#outline");
-    nav.innerHTML = "";
+    this.sidebarRendering = true;
+    try {
+      nav.innerHTML = "";
+    } finally {
+      this.sidebarRendering = false;
+    }
     $("#book-title").innerHTML = this.info?.title ? md(this.info.title) : escapeHtml(this.root.split("/").pop() ?? "");
     $("#book-author").textContent = this.info?.author ?? "";
     const currentRel = this.current ? this.rel(this.current.path) : "";
-    const item = (file: string) => {
-      const a = h("a", { class: "chapter" + (file === currentRel ? " active" : "") + (this.files.includes(file) ? "" : " missing"), href: "#", title: file });
-      a.innerHTML = this.chapterLabel(file);
+    if (this.selected && !this.files.includes(this.selected)) this.selected = null;
+    let tocPlaced = false;
+    const item = (file: string, labelHtml?: string) => {
+      const exists = this.files.includes(file);
+      const cls = ["chapter", file === currentRel ? "active" : "", file === this.selected ? "selected" : "", exists ? "" : "missing"].filter(Boolean).join(" ");
+      const a = h("a", { class: cls, href: "#", title: file, "data-file": file, draggable: "false" });
+      a.innerHTML = labelHtml ?? this.chapterLabel(file);
       a.onclick = (e) => {
         e.preventDefault();
-        if (this.files.includes(file)) this.openFile(this.abs(file));
+        if (!exists) return;
+        this.select(file);
+        nav.focus({ preventScroll: true });
+        if (this.current?.path !== this.abs(file)) this.openFile(this.abs(file));
       };
       a.oncontextmenu = (e) => {
         e.preventDefault();
-        if (this.files.includes(file)) this.showFileMenu(file, e.clientX, e.clientY);
+        if (!exists) return;
+        this.select(file);
+        nav.focus({ preventScroll: true });
+        this.showFileMenu(file, e.clientX, e.clientY);
       };
       const li = h("li", { class: "file-row" }, a);
-      if (this.files.includes(file)) {
-        const del = h("button", { class: "row-delete", title: `Delete ${file}…`, "aria-label": `Delete ${file}` }, "🗑");
-        del.onclick = (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          this.deleteFile(file);
-        };
-        li.appendChild(del);
+      if (file === currentRel && !tocPlaced) {
+        li.appendChild(h("ul", { id: "toc", class: "toc" }));
+        tocPlaced = true;
       }
-      if (file === currentRel) li.appendChild(h("ul", { id: "toc", class: "toc" }));
       return li;
     };
-    const used = new Set<string>();
-    if (this.info && this.info.type === "book") {
+    const isBook = !!this.info && this.info.type === "book";
+    if (isBook) {
       const ul = h("ul", { class: "chapters" });
-      for (const it of this.info.outline) {
-        if (it.kind === "chapter") {
-          ul.appendChild(item(it.file));
-          used.add(it.file);
-        } else {
+      for (const it of this.info!.outline) {
+        if (it.kind === "chapter") ul.appendChild(item(it.file));
+        else {
           const part = h("li", { class: "part" });
           const label = h("div", { class: "part-title" });
           label.innerHTML = md(it.file ? ctx.index.chapters.get(it.file)?.title ?? it.title : it.title);
           if (it.file) {
-            used.add(it.file);
             label.classList.add("clickable");
             label.onclick = () => this.openFile(this.abs(it.file!));
           }
           part.appendChild(label);
           const sub = h("ul", {});
-          for (const c of it.chapters) {
-            sub.appendChild(item(c.file));
-            used.add(c.file);
-          }
+          for (const c of it.chapters) sub.appendChild(item(c.file));
           part.appendChild(sub);
           ul.appendChild(part);
         }
       }
-      if (this.info.appendices.length) {
+      if (this.info!.appendices.length) {
         ul.appendChild(h("li", { class: "part" }, h("div", { class: "part-title" }, "Appendices")));
-        for (const a of this.info.appendices) {
-          ul.appendChild(item(a.file));
-          used.add(a.file);
-        }
+        for (const a of this.info!.appendices) ul.appendChild(item(a.file));
       }
       nav.appendChild(ul);
     }
-    const others = this.files.filter((f) => DOC_EXT.test(f) && !used.has(f));
-    if (others.length) {
-      if (used.size) nav.appendChild(h("div", { class: "section-title" }, "Other files"));
-      const ul = h("ul", { class: "files" });
-      for (const f of others) {
-        const li = item(f);
-        const a = li.querySelector("a")!;
-        a.innerHTML = `<span class="title">${escapeHtml(f)}</span>`;
-        ul.appendChild(li);
-      }
-      nav.appendChild(ul);
+    // ALL FILES: every .qmd / .md in the folder and its sub-folders, as a tree
+    const docs = this.files.filter((f) => DOC_EXT.test(f));
+    if (docs.length) {
+      nav.appendChild(h("div", { class: "section-title" }, "All files"));
+      const tree = fileTree(docs);
+      const renderNode = (node: TreeNode): HTMLUListElement => {
+        const ul = h("ul", { class: "files tree" });
+        for (const d of node.dirs) {
+          const containsCurrent = currentRel.startsWith(d.path + "/");
+          const collapsed = this.collapsedDirs.has(d.path) && !containsCurrent;
+          const li = h("li", { class: "dir-row" });
+          const btn = h("button", { class: "dir", "data-dir": d.path, title: d.path }, `${collapsed ? "▸" : "▾"} ${d.name}`);
+          btn.onclick = () => {
+            if (this.collapsedDirs.has(d.path) || containsCurrent) this.collapsedDirs.delete(d.path);
+            else this.collapsedDirs.add(d.path);
+            if (containsCurrent && !collapsed) this.collapsedDirs.add(d.path);
+            this.renderSidebar();
+          };
+          li.appendChild(btn);
+          if (!collapsed) li.appendChild(renderNode(d));
+          ul.appendChild(li);
+        }
+        for (const f of node.files) ul.appendChild(item(f, `<span class="title">${escapeHtml(f.split("/").pop()!)}</span>`));
+        return ul;
+      };
+      nav.appendChild(renderNode(tree));
     }
     this.renderToc();
+    if (this.renaming) this.mountRename();
+  }
+
+  select(file: string | null) {
+    this.selected = file;
+    for (const a of document.querySelectorAll<HTMLElement>("#outline a.chapter")) a.classList.toggle("selected", a.dataset.file === file);
+  }
+
+  /** Keyboard in the sidebar: ↑/↓ select and open, Enter renames, ⌘⌫ deletes, ⌘D duplicates. */
+  onSidebarKey(e: KeyboardEvent) {
+    if ((e.target as HTMLElement).tagName === "INPUT") return;
+    const mod = e.metaKey || e.ctrlKey;
+    const order = [...new Set([...document.querySelectorAll<HTMLElement>("#outline a.chapter[data-file]:not(.missing)")].map((a) => a.dataset.file!))];
+    const sel = this.selected ?? (this.current ? this.rel(this.current.path) : null);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!order.length) return;
+      const i = sel ? order.indexOf(sel) : -1;
+      const next = order[Math.max(0, Math.min(order.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)))];
+      this.select(next);
+      document.querySelector(`#outline a.chapter[data-file="${CSS.escape(next)}"]`)?.scrollIntoView({ block: "nearest" });
+      this.openFile(this.abs(next));
+    } else if (e.key === "Enter" && sel) {
+      e.preventDefault();
+      this.startRename(sel);
+    } else if (mod && e.key === "Backspace" && sel) {
+      e.preventDefault();
+      this.deleteFile(sel);
+    } else if (mod && e.key.toLowerCase() === "d" && sel) {
+      e.preventDefault();
+      this.duplicateFile(sel);
+    }
+  }
+
+  /** An inline rename in progress; survives sidebar re-renders (file watcher, reindex). */
+  private renaming: { rel: string; value: string; selStart: number; selEnd: number } | null = null;
+
+  /** Inline rename in the sidebar (Finder-style): Enter saves, Esc cancels. */
+  startRename(rel: string) {
+    const name = rel.split("/").pop()!;
+    const dot = name.lastIndexOf(".");
+    this.renaming = { rel, value: name, selStart: 0, selEnd: dot > 0 ? dot : name.length };
+    this.mountRename();
+  }
+
+  private mountRename() {
+    const r = this.renaming;
+    if (!r) return;
+    const rel = r.rel;
+    const a = document.querySelector<HTMLElement>(`#outline a.chapter[data-file="${CSS.escape(rel)}"]`);
+    if (!a) return;
+    const name = rel.split("/").pop()!;
+    const input = h("input", { class: "rename-input", type: "text", spellcheck: "false", value: r.value });
+    a.replaceChildren(input);
+    input.focus();
+    input.setSelectionRange(r.selStart, r.selEnd);
+    input.addEventListener("input", () => {
+      r.value = input.value;
+      r.selStart = input.selectionStart ?? 0;
+      r.selEnd = input.selectionEnd ?? 0;
+    });
+    input.addEventListener("select", () => {
+      r.selStart = input.selectionStart ?? 0;
+      r.selEnd = input.selectionEnd ?? 0;
+    });
+    let done = false;
+    const finish = async (commit: boolean) => {
+      // a sidebar re-render removed this input: it is re-mounted, not finished
+      // (browsers fire blur *before* removing a focused element, hence the flag)
+      if (done || !input.isConnected || this.sidebarRendering) return;
+      done = true;
+      this.renaming = null;
+      const value = input.value.trim();
+      if (commit && value && value !== name) await this.renameFile(rel, value);
+      else this.renderSidebar();
+      $("#outline").focus({ preventScroll: true });
+    };
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("click", (e) => e.stopPropagation());
+  }
+
+  async renameFile(rel: string, newName: string) {
+    if (/[\\/:]/.test(newName) || newName.startsWith(".")) {
+      this.setSaveStatus(`“${newName}” isn't a valid file name`, true);
+      return this.renderSidebar();
+    }
+    const ext = rel.slice(rel.lastIndexOf("."));
+    if (!/\.(qmd|md|markdown|Rmd)$/i.test(newName)) newName += ext;
+    const dir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/") + 1) : "";
+    const newRel = dir + newName;
+    const from = this.abs(rel);
+    const to = this.abs(newRel);
+    const doc = this.docs.get(from);
+    if (doc) await this.flushSave(doc);
+    try {
+      await this.backend.renameFile(from, to);
+    } catch (e) {
+      this.setSaveStatus(`Could not rename: ${String(e).replace(/^Error:\s*/, "")}`, true);
+      return this.renderSidebar();
+    }
+    // keep the book in sync
+    if (isInBook(this.info, rel)) {
+      const ymlName = this.files.find((f) => /^_quarto\.ya?ml$/.test(f));
+      if (ymlName) {
+        const yml = await this.backend.readFile(this.abs(ymlName));
+        const updated = renameChapter(yml, rel, newRel);
+        if (updated !== yml) await this.backend.writeFile(this.abs(ymlName), updated);
+      }
+    }
+    // move in-memory state and the output cache
+    if (doc) {
+      this.docs.delete(from);
+      doc.path = to;
+      this.docs.set(to, doc);
+    }
+    if (this.docsText.has(rel)) {
+      this.docsText.set(newRel, this.docsText.get(rel)!);
+      this.docsText.delete(rel);
+    }
+    const cacheFrom = joinPath(this.root, ".folio/cache", rel + ".json");
+    if (await this.backend.exists(cacheFrom).catch(() => false)) await this.backend.renameFile(cacheFrom, joinPath(this.root, ".folio/cache", newRel + ".json")).catch(() => {});
+    if (this.current === doc && doc) {
+      ctx.file = to;
+      localStorage.setItem(`folio.lastFile:${this.root}`, newRel);
+    }
+    this.selected = newRel;
+    this.files = await this.backend.openProject(this.root);
+    await this.loadProjectConfig();
+    this.updateStatus();
+    this.setSaveStatus(`Renamed to ${newName}`);
+  }
+
+  async duplicateFile(rel: string) {
+    const dot = rel.lastIndexOf(".");
+    const base = rel.slice(0, dot);
+    const ext = rel.slice(dot);
+    let newRel = `${base} copy${ext}`;
+    for (let n = 2; await this.backend.exists(this.abs(newRel)); n++) newRel = `${base} copy ${n}${ext}`;
+    const open = this.docs.get(this.abs(rel));
+    const text = open ? (open === this.current ? this.view.state.doc.toString() : open.state.doc.toString()) : await this.backend.readFile(this.abs(rel));
+    await this.backend.writeFile(this.abs(newRel), text);
+    if (isInBook(this.info, rel)) {
+      const ymlName = this.files.find((f) => /^_quarto\.ya?ml$/.test(f));
+      if (ymlName) {
+        const yml = await this.backend.readFile(this.abs(ymlName));
+        const updated = insertChapter(yml, rel, newRel);
+        if (updated !== yml) await this.backend.writeFile(this.abs(ymlName), updated);
+      }
+    }
+    this.files = await this.backend.openProject(this.root);
+    await this.loadProjectConfig();
+    await this.openFile(this.abs(newRel));
+    this.select(newRel);
+    this.renderSidebar();
+    this.startRename(newRel);
   }
 
   renderToc() {

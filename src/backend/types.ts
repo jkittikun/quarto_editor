@@ -73,6 +73,15 @@ export interface Backend {
   /** File content at HEAD, or null when untracked / no commits yet. */
   gitShowHead(root: string, rel: string): Promise<string | null>;
   gitPush(root: string, remoteUrl: string | null, onLog: (line: string) => void): Promise<ProcResult>;
+  /** Stage paths (relative to root), or everything with "all". */
+  gitStage(root: string, paths: string[] | "all"): Promise<ProcResult>;
+  gitUnstage(root: string, paths: string[] | "all"): Promise<ProcResult>;
+  /** Restore tracked files to HEAD and delete untracked ones. */
+  gitDiscard(root: string, tracked: string[], untracked: string[]): Promise<ProcResult>;
+  /** Raw `git log` records (see parseGitLog). */
+  gitLog(root: string, limit: number): Promise<string>;
+  /** Rename/move a file inside the project; fails if the target exists. */
+  renameFile(from: string, to: string): Promise<void>;
   openExternal(pathOrUrl: string): Promise<void>;
 }
 

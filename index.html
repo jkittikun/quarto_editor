@@ -26,7 +26,7 @@
             <button id="new-file" class="icon" title="New document">＋</button>
           </div>
         </header>
-        <nav id="outline"></nav>
+        <nav id="outline" tabindex="0" aria-label="Files"></nav>
         <footer>
           <button id="open-folder" title="Open project (⌘O)">Open…</button>
           <button id="quick-open" title="Go to file (⌘P)">Go to file ⌘P</button>
@@ -42,6 +42,9 @@
           <button id="toggle-sidebar" class="icon" title="Toggle sidebar (⌘\)">☰</button>
           <div id="crumb"></div>
           <div class="spacer"></div>
+          <button id="present-btn" class="icon-btn" hidden title="Present slides (⌘⇧P)" aria-label="Present">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6L12.8 8z"/></svg>
+          </button>
           <button id="export-pdf" title="Export PDF with Quarto (whole book for book projects)">Export PDF</button>
           <span class="sep"></span>
           <div id="view-switch" class="seg" role="group" aria-label="View mode">
@@ -95,6 +98,10 @@
       </main>
       <div id="scm-resizer" hidden title="Drag to resize · double-click to reset"></div>
       <aside id="scm-panel" hidden aria-label="Source control"></aside>
+    </div>
+    <div id="present" hidden>
+      <iframe id="present-frame" title="Presentation" allow="fullscreen"></iframe>
+      <button id="present-close" title="Exit presentation (Esc)" aria-label="Exit presentation">✕</button>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

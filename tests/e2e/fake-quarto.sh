@@ -14,7 +14,13 @@ done
 rm -rf intro_files
 echo "fake quarto args: $*"
 mkdir -p _book
-if [[ " $* " == *" --to pdf "* ]]; then
+if [[ " $* " == *" --to revealjs "* ]]; then
+  target="$2"
+  out="${target%.*}.html"
+  echo "<html><body><div class=reveal>fake slides</div></body></html>" > "$out"
+  echo "Output created: $out"
+  exit 0
+elif [[ " $* " == *" --to pdf "* ]]; then
   echo "%PDF-1.4 fake" > _book/book.pdf
   echo "Output created: _book/book.pdf"
 else
