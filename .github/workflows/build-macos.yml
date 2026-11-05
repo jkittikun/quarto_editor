@@ -5,6 +5,11 @@ on:
     branches: [main, "claude/**"]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Create a GitHub release with this tag (e.g. v0.1.0) from the built commit; leave empty for a plain build"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -46,9 +51,11 @@ jobs:
           if-no-files-found: error
 
       - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          name: Folio ${{ github.ref_name }}
-          body_path: .github/releases/${{ github.ref_name }}.md
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: Folio ${{ inputs.release_tag || github.ref_name }}
+          body_path: .github/releases/${{ inputs.release_tag || github.ref_name }}.md
           files: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
