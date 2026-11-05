@@ -6,6 +6,8 @@ import { isXrefLabel, type XrefTarget } from "../core/xref";
 import type { CiteItem } from "../core/cite";
 import { ctx, setTabEffect, toggleCalloutEffect, activateEffect, type CellOutputs } from "./context";
 import { codeBody } from "../core/freeze";
+import type { LayoutSpec } from "../core/layout";
+import { sanitizeHtml } from "../core/sanitize";
 import type { KernelOutput } from "../backend/types";
 
 // ---------------------------------------------------------------------------
@@ -373,17 +375,35 @@ function renderOutput(o: KernelOutput): HTMLElement {
   return pre;
 }
 
+/** Optional subfigure layout for a cell's figure outputs (`layout-ncol`, `fig-subcap`). */
+export interface OutputLayout {
+  spec: LayoutSpec;
+  subcaps: string[];
+}
+
 export class CellOutputWidget extends WidgetType {
-  constructor(readonly state: CellOutputs, readonly stale: boolean, readonly caption: string | null) {
+  constructor(readonly state: CellOutputs, readonly stale: boolean, readonly caption: string | null, readonly layout: OutputLayout | null = null) {
     super();
   }
   eq(o: CellOutputWidget) {
-    return o.state === this.state && o.stale === this.stale && o.caption === this.caption;
+    return o.state === this.state && o.stale === this.stale && o.caption === this.caption && JSON.stringify(o.layout) === JSON.stringify(this.layout);
   }
   toDOM() {
     const d = el("div", `cm-cell-output${this.stale ? " cm-cell-stale" : ""}${this.state.running ? " cm-cell-running" : ""}`);
     if (this.state.running && !this.state.outputs.length) d.appendChild(el("div", "cm-out-busy", "Running…"));
-    for (const o of this.state.outputs) d.appendChild(renderOutput(o));
+    const figures = this.layout ? this.state.outputs.filter((o) => o.type === "display" && (o.data["image/png"] || o.data["image/svg+xml"] || o.data["image/jpeg"] || o.data["image/x-folio-path"])) : [];
+    if (this.layout && figures.length > 1) {
+      // subfigures: lay the figure outputs out in the grid, other outputs above
+      for (const o of this.state.outputs) if (!figures.includes(o)) d.appendChild(renderOutput(o));
+      const cells = figures.map((o, i) => {
+        const fig = el("figure", "cm-subfig");
+        fig.appendChild(renderOutput(o));
+        const sub = this.layout!.subcaps[i];
+        fig.appendChild(el("figcaption", "", `(${String.fromCharCode(97 + i)})${sub ? " " + md(sub) : ""}`));
+        return fig;
+      });
+      d.appendChild(layoutGrid(this.layout.spec, cells));
+    } else for (const o of this.state.outputs) d.appendChild(renderOutput(o));
     if (this.state.error) d.appendChild(el("pre", "cm-out-error", escapeHtml(this.state.error)));
     if (this.caption) d.appendChild(el("div", "cm-out-caption", this.caption));
     if (this.state.source === "freeze") d.appendChild(el("div", "cm-out-source", "from last quarto render"));
@@ -455,16 +475,22 @@ export class DiagramWidget extends WidgetType {
 }
 
 export class TableWidget extends WidgetType {
-  constructor(readonly src: string, readonly caption: string | null, readonly label: string | null, readonly pos: number) {
+  constructor(
+    readonly src: string,
+    readonly caption: string | null,
+    readonly label: string | null,
+    readonly pos: number,
+    readonly widths: number[] | null = null,
+  ) {
     super();
   }
   eq(o: TableWidget) {
-    return o.src === this.src && o.caption === this.caption && o.label === this.label &&
+    return o.src === this.src && o.caption === this.caption && o.label === this.label && JSON.stringify(o.widths) === JSON.stringify(this.widths) && JSON.stringify(o.widths) === JSON.stringify(this.widths) &&
       (ctx.index.targets.get(this.label ?? "")?.display ?? null) === (ctx.index.targets.get(o.label ?? "")?.display ?? null);
   }
   toDOM(view: EditorView) {
     const wrap = el("div", "cm-table-wrap");
-    wrap.innerHTML = tableHtml(this.src, this.caption, this.label);
+    wrap.innerHTML = tableHtml(this.src, this.caption, this.label, this.widths);
     revealOnClick(wrap, view, () => this.pos);
     return wrap;
   }
@@ -615,7 +641,7 @@ export class StackWidget extends WidgetType {
 }
 
 /** HTML for a pipe table with an optional (numbered) caption. */
-export function tableHtml(src: string, caption: string | null, label: string | null): string {
+export function tableHtml(src: string, caption: string | null, label: string | null, widths: number[] | null = null): string {
   const rows = src.split("\n").filter((l) => l.trim());
   const split = (l: string) => {
     let s = l.trim();
@@ -629,9 +655,10 @@ export function tableHtml(src: string, caption: string | null, label: string | n
     const t = label ? ctx.index.targets.get(label) : null;
     html += `<caption>${t ? `<span class="cm-cap-label">${escapeHtml(t.display)}:</span> ` : ""}${md(caption)}</caption>`;
   }
+  if (widths) html += `<colgroup>${widths.map((w) => `<col style="width:${w.toFixed(2)}%">`).join("")}</colgroup>`;
   html += "<thead><tr>" + split(rows[0] ?? "").map((c, i) => `<th style="text-align:${aligns[i] ?? "left"}">${md(c)}</th>`).join("") + "</tr></thead><tbody>";
   for (const r of rows.slice(2)) html += "<tr>" + split(r).map((c, i) => `<td style="text-align:${aligns[i] ?? "left"}">${md(c)}</td>`).join("") + "</tr>";
-  return `<table class="cm-table">${html}</tbody></table>`;
+  return `<table class="cm-table${widths ? " cm-table-fixed" : ""}">${html}</tbody></table>`;
 }
 
 /** Superscript footnote marker; the note HTML is shown by the hover card. */
@@ -807,5 +834,75 @@ async function copyText(text: string): Promise<boolean> {
     const ok = document.execCommand("copy");
     ta.remove();
     return ok;
+  }
+}
+
+/** Arrange elements in rows following a Quarto layout spec. */
+export function layoutGrid(spec: LayoutSpec, items: HTMLElement[]): HTMLElement {
+  const grid = el("div", `cm-layout cm-layout-${spec.valign}`);
+  let k = 0;
+  for (const row of spec.rows) {
+    const r = el("div", "cm-layout-row");
+    for (const cell of row) {
+      const c = el("div", cell.spacer ? "cm-layout-cell cm-layout-spacer" : "cm-layout-cell");
+      c.style.flex = `0 0 calc(${cell.pct}% - 8px)`;
+      if (!cell.spacer && k < items.length) c.appendChild(items[k++]);
+      r.appendChild(c);
+    }
+    grid.appendChild(r);
+  }
+  return grid;
+}
+
+/** Figure panels, subfigures and custom layouts (`::: {layout-ncol=2}` / `layout="[[1,1],[1]]"`). */
+export class LayoutWidget extends WidgetType {
+  constructor(
+    readonly spec: LayoutSpec,
+    readonly cells: string[], // HTML per item
+    readonly caption: string | null, // HTML, already prefixed with "Figure n:"
+    readonly pos: number,
+  ) {
+    super();
+  }
+  eq(o: LayoutWidget) {
+    return o.caption === this.caption && o.cells.join("\0") === this.cells.join("\0") && JSON.stringify(o.spec) === JSON.stringify(this.spec);
+  }
+  toDOM(view: EditorView) {
+    const d = el("div", "cm-layout-block");
+    d.appendChild(layoutGrid(this.spec, this.cells.map((html) => el("div", "cm-layout-item", html))));
+    if (this.caption) d.appendChild(el("div", "cm-layout-caption", this.caption));
+    revealOnClick(d, view, () => this.pos);
+    return d;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
+/** A raw HTML table (``<table>`` block or ```{=html} block), sanitized. */
+export class HtmlTableWidget extends WidgetType {
+  constructor(readonly html: string, readonly pos: number) {
+    super();
+  }
+  eq(o: HtmlTableWidget) {
+    return o.html === this.html;
+  }
+  toDOM(view: EditorView) {
+    const wrap = el("div", "cm-table-wrap cm-html-table");
+    const tpl = document.createElement("template");
+    tpl.innerHTML = sanitizeHtml(this.html);
+    // defence in depth: drop any event handler / script URL that survived
+    for (const node of tpl.content.querySelectorAll("*")) {
+      for (const attr of [...node.attributes]) {
+        if (/^on/i.test(attr.name) || /^\s*(javascript|vbscript):/i.test(attr.value)) node.removeAttribute(attr.name);
+      }
+    }
+    for (const t of tpl.content.querySelectorAll("table")) t.classList.add("cm-table");
+    wrap.appendChild(tpl.content);
+    revealOnClick(wrap, view, () => this.pos);
+    return wrap;
+  }
+  ignoreEvent() {
+    return false;
   }
 }

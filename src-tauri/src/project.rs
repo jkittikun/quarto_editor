@@ -135,10 +135,38 @@ pub struct PythonEnv {
     pub source: String,
     pub version: Option<String>,
     pub ready: bool,
+    #[serde(rename = "renderReady")]
+    pub render_ready: bool,
+    pub missing: Vec<String>,
 }
 
 /// Python snippet printing "<version> <ready>" (same as PROBE in src/core/python.ts).
-const PROBE: &str = "import sys,importlib.util as u;print(sys.version.split()[0], all(u.find_spec(m) is not None for m in ('jupyter_client','ipykernel')))";
+/// Same snippet as PROBE in src/core/python.ts: prints "<version> <missing,modules|->".
+const PROBE: &str = "import sys,importlib.util as u;m=[n for n in ('jupyter_client','ipykernel','yaml','nbformat','nbclient') if u.find_spec(n) is None];print(sys.version.split()[0], ','.join(m) or '-')";
+
+/// Packages installed into project environments (kernel + Quarto's renderer); see KERNEL_PACKAGES.
+pub const KERNEL_PACKAGES: &[&str] = &["jupyter_client", "ipykernel", "pyyaml", "nbformat", "nbclient"];
+
+/// Parsed probe output: (version, missing pip package names).
+pub fn parse_probe(out: &str) -> Option<(String, Vec<String>)> {
+    let mut parts = out.split_whitespace();
+    let version = parts.next()?.to_owned();
+    let missing = parts.next()?;
+    if !version.chars().next()?.is_ascii_digit() {
+        return None;
+    }
+    let missing = if missing == "-" {
+        vec![]
+    } else {
+        missing.split(',').filter(|m| !m.is_empty()).map(|m| if m == "yaml" { "pyyaml".to_owned() } else { m.to_owned() }).collect()
+    };
+    Some((version, missing))
+}
+
+/// Folio only pip-installs into environments it is safe to modify (never system/Homebrew Pythons).
+pub fn can_install_into(python: &str) -> bool {
+    !(python == "python3" || python == "python" || python.starts_with("/usr/") || python.starts_with("/opt/homebrew/") || python.starts_with("/System/"))
+}
 
 /// Reject anything that isn't `python3`/`python` on PATH or an existing file.
 pub fn check_python(p: &str) -> Result<(), String> {
@@ -239,7 +267,7 @@ pub fn python_candidates(root: &Path, home: &Path) -> Vec<(String, String, Strin
 }
 
 /// Run the probe with a timeout; returns (version, ready).
-fn probe_python(path: &str) -> Option<(String, bool)> {
+fn probe_python(path: &str) -> Option<(String, Vec<String>)> {
     let mut child = std::process::Command::new(path)
         .args(["-c", PROBE])
         .stdin(std::process::Stdio::null())
@@ -261,10 +289,7 @@ fn probe_python(path: &str) -> Option<(String, bool)> {
     let mut out = String::new();
     use std::io::Read;
     child.stdout.take()?.read_to_string(&mut out).ok()?;
-    let mut parts = out.split_whitespace();
-    let version = parts.next()?.to_owned();
-    let ready = parts.next()? == "True";
-    version.chars().next()?.is_ascii_digit().then_some((version, ready))
+    parse_probe(&out)
 }
 
 /// Detect and probe interpreters (in parallel), de-duplicated by real path.
@@ -299,7 +324,9 @@ pub fn list_pythons(root: &Path, extra: &[String]) -> Vec<PythonEnv> {
             label,
             source,
             version: probe.as_ref().map(|p| p.0.clone()),
-            ready: probe.map(|p| p.1).unwrap_or(false),
+            ready: probe.as_ref().map(|p| !p.1.iter().any(|m| m == "jupyter_client" || m == "ipykernel")).unwrap_or(false),
+            render_ready: probe.as_ref().map(|p| p.1.is_empty()).unwrap_or(false),
+            missing: probe.map(|p| p.1).unwrap_or_default(),
         })
         .collect()
 }
@@ -325,14 +352,16 @@ mod tests {
         let bin = root.join(".venv/bin");
         std::fs::create_dir_all(&bin).unwrap();
         let py = bin.join("python");
-        std::fs::write(&py, "#!/bin/sh\necho '3.12.3 True'\n").unwrap();
+        std::fs::write(&py, "#!/bin/sh\necho '3.12.3 -'\n").unwrap();
         std::fs::set_permissions(&py, std::fs::Permissions::from_mode(0o755)).unwrap();
         let envs = list_pythons(&root, &[]);
         let first = &envs[0];
         assert_eq!(first.label, ".venv");
         assert_eq!(first.source, "project");
         assert_eq!(first.version.as_deref(), Some("3.12.3"));
-        assert!(first.ready);
+        assert!(first.ready && first.render_ready);
+        assert_eq!(parse_probe("3.11.2 yaml,nbclient"), Some(("3.11.2".into(), vec!["pyyaml".into(), "nbclient".into()])));
+        assert_eq!(parse_probe("Traceback"), None);
         assert!(check_python(py.to_str().unwrap()).is_ok());
         assert!(check_python("rm").is_err());
         let _ = std::fs::remove_dir_all(&root);

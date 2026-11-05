@@ -478,6 +478,9 @@ try {
     await waitFor(() => page.evaluate(() => !!folio.current));
     ok(await waitFor(() => page.locator("#present-btn").isVisible(), 3000), "▶ Present appears for a Reveal.js document");
     await page.click("#present-btn");
+    // the selected Python may lack Quarto's packages: then Folio asks first
+    await waitFor(async () => (await page.locator("#present").isVisible()) || (await page.locator(".modal-choice[data-choice=anyway]").count()) > 0, 5000);
+    if (await page.locator(".modal-choice[data-choice=anyway]").count()) await page.click(".modal-choice[data-choice=anyway]");
     ok(await waitFor(() => page.locator("#present").isVisible(), 15000), "Present renders and opens the slides full-screen");
     ok(await waitFor(() => page.frameLocator("#present-frame").locator(".reveal").count().then((n) => n === 1), 5000), "the rendered Reveal.js output is shown");
     await page.evaluate(() => folio.closePresentation());
@@ -485,6 +488,44 @@ try {
   }
   await page.evaluate((dir) => folio.openProject(dir), book);
   await waitFor(() => page.evaluate(() => !!folio.current));
+
+  // ---------------------------------------------------------------- 4n. figure layouts, tables, slash menu, Python packages
+  await page.evaluate(() => folio.openFile(folio.abs("summary.qmd")));
+  await sleep(500);
+  ok(await waitFor(() => page.locator(".cm-layout-block").count().then((n) => n >= 2)), "layout divs render as figure panels / custom layouts");
+  const subcaps = await page.locator(".cm-layout-block").first().locator("figcaption").allInnerTexts();
+  ok(subcaps.join("|") === "(a) Early growth|(b) Late growth", `subfigures get (a)/(b) sub-captions (${subcaps.join("|")})`);
+  ok(/^Figure \d+\.1: Two views/.test(await page.locator(".cm-layout-caption").first().innerText()), "subfigure panel has the main 'Figure n.1:' caption");
+  ok(await page.locator(".cm-ref", { hasText: /^Figure \d+\.1\(b\)$/ }).count().then((n) => n === 1), "@fig-…-late resolves to 'Figure n.1(b)'");
+  const firstRow = page.locator(".cm-layout-block").nth(1).locator(".cm-layout-row").first();
+  ok((await firstRow.locator(".cm-layout-cell").count()) === 2 && (await page.locator(".cm-layout-block").nth(1).locator(".cm-layout-row").count()) === 2, 'layout="[[1,1],[1]]" gives two rows (2 + 1)');
+  const widths = await page.locator("table.cm-table-fixed th").evaluateAll((ths) => ths.map((t) => t.getBoundingClientRect().width));
+  ok(widths.length === 2 && Math.abs(widths[0] / widths[1] - 3) < 0.3, `tbl-colwidths [75,25] applied (${widths.map(Math.round).join(" / ")})`);
+  ok((await page.locator(".cm-html-table table").count()) === 1 && (await page.locator(".cm-html-table [onclick]").count()) === 0, "HTML table renders, sanitized");
+  // slash menu
+  await page.locator(".cm-content").first().click({ position: { x: 30, y: 30 } });
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("/");
+  await page.waitForSelector(".cm-tooltip-autocomplete");
+  const opts = await page.locator(".cm-tooltip-autocomplete li").allInnerTexts();
+  ok(["/subfigures", "/figure-panel", "/layout", "/table-widths"].every((o) => opts.some((t) => t.startsWith(o))), "slash menu offers /subfigures, /figure-panel, /layout, /table-widths");
+  await page.keyboard.type("figure");
+  await page.waitForTimeout(200);
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  ok((await page.evaluate(() => folio.view.state.doc.toString())).includes("{#fig-name width=50%}"), "/figure inserts a width");
+  for (let i = 0; i < 4; i++) await page.keyboard.press("Control+z");
+  // Python: the .venv created earlier has no packages → Render asks before failing
+  await page.evaluate(() => folio.openFile(folio.abs("methods.qmd")));
+  await page.evaluate(() => { folio.pythons = null; return folio.refreshPythons(); });
+  ok(await page.evaluate(() => (folio.effectivePython()?.missing ?? []).includes("pyyaml")), "probe reports pyyaml missing in the bare .venv");
+  ok(await page.locator("#python-env.warn").count().then((n) => n === 1), "footer Python is flagged");
+  await page.click("#render-chapter");
+  ok(await waitFor(() => page.locator(".modal-box", { hasText: "Python packages missing" }).count().then((n) => n === 1), 5000), "Render warns about missing packages before running Quarto");
+  ok((await page.locator(".modal-choice[data-choice=install]").count()) === 1, "…and offers to install them");
+  await shot("python-missing");
+  await page.click(".modal-choice[data-choice=cancel]");
 
   // ---------------------------------------------------------------- 5. quarto render
   if (hasQuarto) {
@@ -505,6 +546,8 @@ try {
     }
     if (FAKE_QUARTO) {
       await page.click("#export-pdf");
+      await waitFor(() => page.locator(".modal-choice[data-choice=anyway]").count().then((n) => n > 0), 3000);
+      if (await page.locator(".modal-choice[data-choice=anyway]").count()) await page.click(".modal-choice[data-choice=anyway]");
       const pdfDone = await waitFor(() => page.locator("#log-title").innerText().then((t) => /PDF exported|failed/.test(t)), 15000, 250);
       ok(pdfDone && (await page.locator("#log-title").innerText()) === "PDF exported", "Export PDF runs quarto render --to pdf");
       ok((await page.locator("#log").innerText()).includes("fake quarto args: render --to pdf"), "whole book exported with --to pdf");

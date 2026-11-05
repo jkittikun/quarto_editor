@@ -22,7 +22,9 @@ export interface PythonEnv {
   version: string | null; // null when the interpreter could not be run
   label: string; // e.g. ".venv", "conda: base", "pyenv 3.12.3", "system"
   source: "project" | "env" | "conda" | "pyenv" | "system" | "custom";
-  ready: boolean; // jupyter_client + ipykernel importable
+  ready: boolean; // jupyter_client + ipykernel importable (run cells in Folio)
+  renderReady: boolean; // also pyyaml, nbformat, nbclient (quarto render with Python cells)
+  missing: string[]; // pip package names that are not installed
 }
 
 export interface RenderOptions {
@@ -64,6 +66,8 @@ export interface Backend {
 
   /** Create `<root>/<name>` with `<basePython> -m venv`, optionally installing jupyter_client + ipykernel. */
   createVenv(root: string, name: string, basePython: string, installKernel: boolean, onLog: (line: string) => void): Promise<ProcResult>;
+  /** pip-install Folio's fixed package list (KERNEL_PACKAGES) into an environment. */
+  installPackages(root: string, python: string, onLog: (line: string) => void): Promise<ProcResult>;
 
   // ---- git (system git, fixed subcommands only) ----
   gitStatus(root: string): Promise<import("../core/git").GitStatus>;

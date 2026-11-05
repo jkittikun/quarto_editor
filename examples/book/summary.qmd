@@ -20,6 +20,41 @@ This paragraph only appears in the PDF version.
 
 {{< include _shared.qmd >}}
 
+::: {#fig-growth-pair layout-ncol=2}
+
+![Early growth](images/growth.svg){#fig-growth-early}
+
+![Late growth](images/growth.svg){#fig-growth-late}
+
+Two views of the same growth curve.
+
+:::
+
+See @fig-growth-pair and its panel @fig-growth-late.
+
+::: {layout="[[1,1],[1]]"}
+
+![Left](images/growth.svg)
+
+![Right](images/growth.svg)
+
+**A full-width row** under the two images: custom layouts can mix images and text.
+
+:::
+
+| Measure | Value |
+|---------|------:|
+| Natural frequency of the first bending mode | 3.2 Hz |
+| Damping ratio | 1.4 % |
+
+: Modal properties {#tbl-modal tbl-colwidths="[75,25]"}
+
+<table>
+  <caption>An HTML table</caption>
+  <thead><tr><th>Sensor</th><th>Channel</th></tr></thead>
+  <tbody><tr><td>Accelerometer</td><td onclick="alert(1)">A1</td></tr></tbody>
+</table>
+
 :::: {.columns}
 
 ::: {.column width="50%"}

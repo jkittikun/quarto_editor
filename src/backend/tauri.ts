@@ -79,6 +79,9 @@ export class TauriBackend implements Backend {
   createVenv(root: string, name: string, basePython: string, installKernel: boolean, onLog: (line: string) => void) {
     return this.proc<ProcResult>("create_venv", { root, name, basePython, installKernel }, onLog);
   }
+  installPackages(root: string, python: string, onLog: (line: string) => void) {
+    return this.proc<ProcResult>("install_packages", { root, python }, onLog);
+  }
   gitStatus(root: string) {
     return invoke<GitStatus>("git_status", { root });
   }

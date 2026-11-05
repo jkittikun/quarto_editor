@@ -150,7 +150,12 @@ when you launch it from Finder.
   `ipykernel`, and you can also enter a path. Folio remembers your choice per project and also
   passes it to Quarto as `QUARTO_PYTHON`. When the project has no virtual environment, the picker
   offers **＋ Create virtual environment (.venv)**: pick a base Python, and optionally install
-  `jupyter_client` and `ipykernel` in one step.
+  everything needed to run cells *and* render with Quarto (`jupyter_client`, `ipykernel`, `pyyaml`,
+  `nbformat`, `nbclient`) in one step.
+  * An interpreter that is missing packages is shown in orange, and the picker offers **Install
+    missing packages**.
+  * Before Render, Present or Export PDF, Folio warns and offers to install them instead of letting
+    Quarto fail with `No module named 'yaml'`.
 * **Export PDF** (top bar): runs `quarto render --to pdf`, for the whole book or for the current
   document. This needs a LaTeX installation; `quarto install tinytex` is the easiest.
 * **Layout:** kernel and render controls live in the bottom bar. Drag the sidebar edge to resize it
@@ -198,7 +203,10 @@ when you launch it from Finder.
 | `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``, `^sup^`, `~sub~`, links, `[span]{.class}` | ✅ |
 | `$inline$`, `$$display$$ {#eq-…}` | ✅ KaTeX, with equation numbers |
 | `![cap](img.png){#fig-… width=60%}` | ✅ with "Figure n.m:" caption |
-| Pipe tables + `: caption {#tbl-…}` | ✅ |
+| Pipe tables + `: caption {#tbl-…}` | ✅ with `tbl-colwidths="[75,25]"` and relative dash widths |
+| HTML tables (`<table>` or ```` ```{=html} ````) | ✅ rendered, with scripts and event handlers removed |
+| Subfigures `::: {#fig-x layout-ncol=2}` | ✅ grid with (a), (b) sub-captions; `@fig-x-a` → "Figure 1.2(a)" |
+| Figure panels / custom layouts (`layout-ncol`, `layout-nrow`, `layout="[[1,1],[1]]"`) | ✅ side by side, also for code-cell plots with `fig-subcap` |
 | Callouts (all 5 types, titles) | ✅ — `collapse="true"/"false"` gives a ▸/▾ toggle |
 | `.panel-tabset` | ✅ clickable tabs |
 | Theorem-like divs (`#thm-…`, `#lem-…`, `#def-…`, …) | ✅ "Theorem 2.1 (Name)" |

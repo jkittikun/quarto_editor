@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
 
       - name: Python packages for the kernel
-        run: pip install jupyter_client ipykernel matplotlib pandas numpy
+        run: pip install jupyter_client ipykernel pyyaml nbformat nbclient matplotlib pandas numpy
 
       - uses: quarto-dev/quarto-actions/setup@v2
 

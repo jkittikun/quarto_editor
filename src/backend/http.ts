@@ -115,6 +115,9 @@ export class HttpBackend implements Backend {
   createVenv(root: string, name: string, basePython: string, installKernel: boolean, onLog: (line: string) => void) {
     return this.proc("/api/venv", { root, name, basePython, installKernel }, onLog);
   }
+  installPackages(root: string, python: string, onLog: (line: string) => void) {
+    return this.proc("/api/pip", { root, python }, onLog);
+  }
   async gitStatus(root: string) {
     return (await this.api("/api/git/status", { root })) as GitStatus;
   }

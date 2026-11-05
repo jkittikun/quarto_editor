@@ -1,5 +1,6 @@
 import { StateEffect, StateField, MapMode, type EditorState } from "@codemirror/state";
 import { syntaxTree, ensureSyntaxTree } from "@codemirror/language";
+import { load } from "js-yaml";
 import type { KernelMsg, KernelOutput } from "../backend/types";
 import type { CellOutputs } from "./context";
 
@@ -90,17 +91,51 @@ export function parseInfo(info: string): { lang: string; executable: boolean } {
   return { lang: lang.replace(/^\./, ""), executable };
 }
 
+/**
+ * Leading `#|` cell options, parsed as YAML (so lists like `fig-subcap: [A, B]` or multi-line
+ * `#|   - A` work). Scalars become strings; lists/objects are JSON-encoded strings.
+ */
 export function cellOptions(code: string): Record<string, string> {
-  const opts: Record<string, string> = {};
+  const lines: string[] = [];
   for (const line of code.split("\n")) {
-    const m = /^\s*(?:#|%%|\/\/)\|\s*([\w-]+)\s*:\s*(.*?)\s*$/.exec(line);
+    const m = /^\s*(?:#|%%|\/\/)\|\s?(.*)$/.exec(line);
     if (!m) {
       if (line.trim()) break;
       continue;
     }
-    opts[m[1]] = m[2].replace(/^["'](.*)["']$/, "$1");
+    lines.push(m[1]);
+  }
+  const opts: Record<string, string> = {};
+  if (!lines.length) return opts;
+  let parsed: unknown = null;
+  try {
+    parsed = load(lines.join("\n"));
+  } catch {
+    parsed = null;
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      opts[k] = v === null || v === undefined ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+    }
+    return opts;
+  }
+  // not valid YAML: fall back to simple "key: value" lines
+  for (const l of lines) {
+    const m = /^([\w-]+)\s*:\s*(.*?)\s*$/.exec(l);
+    if (m) opts[m[1]] = m[2].replace(/^["'](.*)["']$/, "$1");
   }
   return opts;
+}
+
+/** A list-valued option (JSON-encoded by cellOptions), e.g. fig-subcap. */
+export function optionList(v: string | undefined): string[] {
+  if (!v) return [];
+  try {
+    const x = JSON.parse(v);
+    return Array.isArray(x) ? x.map(String) : [String(x)];
+  } catch {
+    return [v];
+  }
 }
 
 export function listCells(state: EditorState): CellInfo[] {

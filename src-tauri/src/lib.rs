@@ -277,6 +277,21 @@ fn rename_file(state: State<'_, AppState>, from: String, to: String) -> CmdResul
     Ok(())
 }
 
+/// pip-install the fixed KERNEL_PACKAGES list into a project / conda / pyenv environment.
+#[tauri::command]
+async fn install_packages(app: AppHandle, req: String, root: String, python: String) -> CmdResult<git::ProcResult> {
+    let root = checked(&app.state::<AppState>(), &root)?;
+    project::check_python(&python)?;
+    if !project::can_install_into(&python) {
+        return Err(CmdError("Folio only installs packages into project, conda or pyenv environments".into()));
+    }
+    let steps = vec![(python, ["-m", "pip", "install"].iter().chain(project::KERNEL_PACKAGES.iter()).map(|s| s.to_string()).collect())];
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || git::run_steps(&app2, &req, &root, &steps))
+        .await
+        .map_err(|e| CmdError(e.to_string()))
+}
+
 /// Create a virtual environment in the project (fixed commands: venv, then optional pip install).
 #[tauri::command]
 async fn create_venv(
@@ -298,7 +313,7 @@ async fn create_venv(
         let py = if cfg!(windows) { target.join("Scripts/python.exe") } else { target.join("bin/python") };
         steps.push((
             py.to_string_lossy().into_owned(),
-            vec!["-m".into(), "pip".into(), "install".into(), "jupyter_client".into(), "ipykernel".into()],
+            ["-m", "pip", "install"].iter().chain(project::KERNEL_PACKAGES.iter()).map(|s| s.to_string()).collect(),
         ));
     }
     let app2 = app.clone();
@@ -379,7 +394,8 @@ pub fn run() {
             git_unstage,
             git_discard,
             git_log,
-            rename_file
+            rename_file,
+            install_packages
         ])
         .build(tauri::generate_context!())
         .expect("error while building Folio")

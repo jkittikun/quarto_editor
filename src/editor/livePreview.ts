@@ -12,13 +12,15 @@ import { parseBracketCitation } from "../core/cite";
 import { scanTargets, XREF_TYPES, type HeadingNumber } from "../core/xref";
 import { escapeHtml, renderBlocks } from "../core/inline";
 import { isConditional, visibleIn, conditionLabel } from "../core/conditional";
+import { hasLayout, parseLayout, splitLayoutBlocks, splitFigureCaption } from "../core/layout";
+import { isHtmlTable, tableColWidths } from "../core/sanitize";
 import { ctx, refreshEffect, setTabEffect, toggleCalloutEffect, activateEffect } from "./context";
-import { outputsField, parseInfo, cellOptions, hashCode } from "./cells";
+import { outputsField, parseInfo, cellOptions, optionList, hashCode } from "./cells";
 import {
   MathWidget, ImageWidget, RefWidget, FrontMatterWidget, CalloutHeaderWidget, LabelWidget, TabBarWidget,
   CellHeaderWidget, CellOutputWidget, DiagramWidget, TableWidget, BulletWidget, CheckboxWidget, HrWidget,
   RefsWidget, WrapWidget, ColumnsWidget, HiddenBlockWidget, StackWidget,
-  FootnoteWidget, FootnotesListWidget, MarginWidget, ChipWidget, IndexMarkWidget, IncludeWidget, refText, citeText, md, inlineCtx, renderMath,
+  FootnoteWidget, FootnotesListWidget, MarginWidget, ChipWidget, IndexMarkWidget, IncludeWidget, LayoutWidget, HtmlTableWidget, refText, citeText, md, inlineCtx, renderMath,
 } from "./widgets";
 
 const hidden = Decoration.replace({});
@@ -268,6 +270,28 @@ export function buildDecorations(state: EditorState): DecorationSet {
     for (let ln = innerFirst; ln <= innerLast; ln++) addLine(ln, `${kind} cm-div-inner cm-depth-${d.depth}`);
     if (d.closeFrom !== null) addLine(closeLine.number, `${kind} cm-div-close cm-depth-${d.depth}`);
 
+    // Figure panels, subfigures and custom layouts
+    if (hasLayout(d.attrs) && d.closeFrom !== null && !linesTouch(openLine.from, closeLine.to)) {
+      const text = innerFirst <= innerLast ? doc.sliceString(doc.line(innerFirst).from, doc.line(innerLast).to) : "";
+      const isFig = !!d.attrs.id && /^(fig|tbl)-/.test(d.attrs.id);
+      const blocks = splitLayoutBlocks(text);
+      const { items, caption } = isFig ? splitFigureCaption(blocks) : { items: blocks, caption: null };
+      let sub = 0;
+      const bctx = { ...inlineCtx, math: renderMath, image: (src: string) => resolveImage(src) };
+      const cells = items.map((b) => {
+        const img = /^\s*!\[([^\]]*)\]\(([^)\s]+)[^)]*\)(\{[^}]*\})?\s*$/.exec(b);
+        if (img) {
+          const letter = isFig ? `(${String.fromCharCode(97 + sub++)})` : "";
+          const capText = [letter, img[1] ? md(img[1]) : ""].filter(Boolean).join(" ");
+          return `<figure class="cm-subfig"><img src="${escapeHtml(resolveImage(img[2]))}" alt="${escapeHtml(img[1])}">${capText ? `<figcaption>${capText}</figcaption>` : ""}</figure>`;
+        }
+        return renderBlocks(b, bctx);
+      });
+      const t = d.attrs.id ? ctx.index.targets.get(d.attrs.id) : null;
+      const capHtml = caption ? `${t ? `<span class="cm-cap-label">${escapeHtml(t.display)}:</span> ` : ""}${md(caption)}` : null;
+      addBlock(openLine.from, closeLine.to, new LayoutWidget(parseLayout(d.attrs, cells.length), cells, capHtml, openLine.from));
+      continue;
+    }
     // Margin notes: rendered in the right margin until the cursor enters them.
     if ((cls.includes("column-margin") || cls.includes("aside")) && d.closeFrom !== null && !linesTouch(openLine.from, closeLine.to)) {
       const text = innerFirst <= innerLast ? doc.sliceString(doc.line(innerFirst).from, doc.line(innerLast).to) : "";
@@ -517,6 +541,10 @@ export function buildDecorations(state: EditorState): DecorationSet {
           const codeTo = closed ? Math.max(codeFrom, last.from - 1) : n.to;
           const code = doc.sliceString(codeFrom, codeTo);
           const raw = /^\s*\{=([\w-]+)\}\s*$/.exec(infoText);
+          if (raw && closed && raw[1].toLowerCase() === "html" && isHtmlTable(code) && !linesTouch(n.from, n.to)) {
+            addBlock(first.from, last.to, new HtmlTableWidget(code, n.from));
+            return false;
+          }
           if (raw && closed) {
             const fmt = raw[1].toLowerCase();
             const hideIt = ctx.reader && fmt !== "html";
@@ -545,7 +573,11 @@ export function buildDecorations(state: EditorState): DecorationSet {
             const t = label ? ctx.index.targets.get(label) : null;
             const capKey = label ? `${label.split("-")[0]}-cap` : "";
             const cap = t && opts[capKey] ? `${t.display}: ${opts[capKey]}` : opts[capKey] ?? null;
-            return new CellOutputWidget(out, hashCode(code) !== out.hash, cap);
+            const layoutAttrs = { id: null, classes: [], kv: Object.fromEntries(["layout-ncol", "layout-nrow", "layout", "layout-valign"].filter((k) => opts[k]).map((k) => [k, opts[k]])) };
+            const subcaps = optionList(opts["fig-subcap"]);
+            const nFigs = out.outputs.filter((o) => o.type === "display" && (o.data["image/png"] || o.data["image/svg+xml"] || o.data["image/jpeg"] || o.data["image/x-folio-path"])).length;
+            const layout = nFigs > 1 && (hasLayout(layoutAttrs) || subcaps.length) ? { spec: parseLayout(hasLayout(layoutAttrs) ? layoutAttrs : { ...layoutAttrs, kv: { "layout-ncol": String(nFigs) } }, nFigs), subcaps } : null;
+            return new CellOutputWidget(out, hashCode(code) !== out.hash, cap, layout);
           };
           // Cell options, as in the rendered book: include: false hides everything,
           // echo: false hides the code but keeps the output.
@@ -593,6 +625,7 @@ export function buildDecorations(state: EditorState): DecorationSet {
           let last = doc.lineAt(n.to);
           let caption: string | null = null;
           let label: string | null = null;
+          let colwidths: string | undefined;
           // Pandoc table caption: a following paragraph starting with ": "
           let ln = last.number + 1;
           if (ln <= doc.lines && !doc.line(ln).text.trim()) ln++;
@@ -600,10 +633,19 @@ export function buildDecorations(state: EditorState): DecorationSet {
             const capLine = doc.line(ln);
             const m = /^:\s+(.*?)\s*(\{[^{}]*\})?\s*$/.exec(capLine.text)!;
             caption = m[1];
-            label = m[2] ? parseAttrs(m[2]).id : null;
+            const ca = m[2] ? parseAttrs(m[2]) : null;
+            label = ca?.id ?? null;
+            colwidths = ca?.kv["tbl-colwidths"];
             last = capLine;
           }
-          if (!linesTouch(first.from, last.to)) addBlock(first.from, last.to, new TableWidget(doc.sliceString(n.from, n.to), caption, label, n.from));
+          if (!linesTouch(first.from, last.to)) addBlock(first.from, last.to, new TableWidget(doc.sliceString(n.from, n.to), caption, label, n.from, tableColWidths(doc.sliceString(n.from, n.to), colwidths)));
+          return false;
+        }
+        case "HTMLBlock": {
+          const text = doc.sliceString(n.from, n.to);
+          if (isHtmlTable(text) && !linesTouch(n.from, n.to)) {
+            addBlock(doc.lineAt(n.from).from, doc.lineAt(n.to).to, new HtmlTableWidget(text, n.from));
+          }
           return false;
         }
         case "Blockquote": {

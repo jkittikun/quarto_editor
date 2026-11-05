@@ -7,7 +7,7 @@ import type { Plugin } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import os from "node:os";
-import { pythonCandidates, PROBE, parseProbe } from "../src/core/python";
+import { pythonCandidates, PROBE, parseProbe, KERNEL_PACKAGES } from "../src/core/python";
 import { parseGitStatus, mergeGitignore, validVenvName, DEFAULT_GITIGNORE } from "../src/core/git";
 import { createInterface } from "node:readline";
 import fs from "node:fs";
@@ -136,7 +136,7 @@ function checkPython(p: string): string {
   return p;
 }
 
-function probePython(p: string): Promise<{ version: string; ready: boolean } | null> {
+function probePython(p: string): Promise<ReturnType<typeof parseProbe>> {
   return new Promise((resolve) => {
     execFile(p, ["-c", PROBE], { timeout: 4000 }, (err, stdout) => resolve(err ? null : parseProbe(String(stdout))));
   });
@@ -175,7 +175,15 @@ export async function listPythons(root: string, extra: string[] = []) {
   const probed = await Promise.all(unique.map(async (c) => ({ ...c, probe: await probePython(c.path) })));
   return probed
     .filter((c) => c.probe || c.source === "custom")
-    .map((c) => ({ path: c.path, label: c.label, source: c.source, version: c.probe?.version ?? null, ready: c.probe?.ready ?? false }));
+    .map((c) => ({
+      path: c.path,
+      label: c.label,
+      source: c.source,
+      version: c.probe?.version ?? null,
+      ready: c.probe?.ready ?? false,
+      renderReady: c.probe?.renderReady ?? false,
+      missing: c.probe?.missing ?? [],
+    }));
 }
 
 export function findPython(root: string): string {
@@ -342,13 +350,23 @@ export function folioApi(opts: { defaultRoot?: string; kernelScript: string }): 
               const base = checkPython(String(basePython));
               const target = path.join(cwd, String(name));
               const steps: [string, string[]][] = [[base, ["-m", "venv", target]]];
-              if (installKernel) steps.push([path.join(target, "bin", "python"), ["-m", "pip", "install", "jupyter_client", "ipykernel"]]);
+              if (installKernel) steps.push([path.join(target, "bin", "python"), ["-m", "pip", "install", ...KERNEL_PACKAGES]]);
               streamSteps(id, cwd, steps, () => {
                 // keep the new environment out of git
                 const gi = path.join(cwd, ".gitignore");
                 const cur = fs.existsSync(gi) ? fs.readFileSync(gi, "utf8") : "";
                 if (fs.existsSync(path.join(cwd, ".git")) || cur) fs.writeFileSync(gi, mergeGitignore(cur, [`${name}/`]));
               });
+              return json(res, { ok: true });
+            }
+            case "/api/pip": {
+              const { req: id, root, python } = await body(req);
+              const cwd = allowed(root);
+              const py = checkPython(String(python));
+              if (py === "python3" || py === "python" || /^\/(usr|opt\/homebrew)\//.test(py)) {
+                throw Object.assign(new Error("Folio only installs packages into project, conda or pyenv environments"), { status: 400 });
+              }
+              streamSteps(id, cwd, [[py, ["-m", "pip", "install", ...KERNEL_PACKAGES]]]);
               return json(res, { ok: true });
             }
             case "/api/git/status": {

@@ -62,13 +62,44 @@ export function pythonCandidates(i: CandidateInputs): PythonCandidate[] {
   return out;
 }
 
-/** Python snippet printing "<version> <ready>" where ready means the kernel packages import. */
-export const PROBE =
-  "import sys,importlib.util as u;print(sys.version.split()[0], all(u.find_spec(m) is not None for m in ('jupyter_client','ipykernel')))";
+/** Packages Folio installs into a project environment: kernel (Folio) + Quarto's renderer. */
+export const KERNEL_PACKAGES = ["jupyter_client", "ipykernel", "pyyaml", "nbformat", "nbclient"];
+/** Modules checked by the probe, with the pip package that provides each. */
+export const PROBE_MODULES: Record<string, string> = {
+  jupyter_client: "jupyter_client",
+  ipykernel: "ipykernel",
+  yaml: "pyyaml",
+  nbformat: "nbformat",
+  nbclient: "nbclient",
+};
+const KERNEL_ONLY = ["jupyter_client", "ipykernel"];
 
-export function parseProbe(out: string): { version: string; ready: boolean } | null {
-  const m = /^(\d+\.\d+\.\d+\S*)\s+(True|False)\s*$/m.exec(out);
-  return m ? { version: m[1], ready: m[2] === "True" } : null;
+/** Python snippet printing "<version> <missing,modules|->". */
+export const PROBE =
+  "import sys,importlib.util as u;m=[n for n in ('jupyter_client','ipykernel','yaml','nbformat','nbclient') if u.find_spec(n) is None];print(sys.version.split()[0], ','.join(m) or '-')";
+
+export interface ProbeResult {
+  version: string;
+  ready: boolean; // can run cells in Folio
+  renderReady: boolean; // can also be used by `quarto render` for Python cells
+  missing: string[]; // pip package names
+}
+
+export function parseProbe(out: string): ProbeResult | null {
+  const m = /^(\d+\.\d+\.\d+\S*)\s+(\S+)\s*$/m.exec(out);
+  if (!m) return null;
+  const missingMods = m[2] === "-" ? [] : m[2].split(",").filter(Boolean);
+  return {
+    version: m[1],
+    ready: !missingMods.some((x) => KERNEL_ONLY.includes(x)),
+    renderReady: missingMods.length === 0,
+    missing: missingMods.map((x) => PROBE_MODULES[x] ?? x),
+  };
+}
+
+/** Sources Folio may pip-install into (never system / Homebrew Pythons, see PEP 668). */
+export function canInstallInto(source: string): boolean {
+  return source === "project" || source === "conda" || source === "pyenv" || source === "custom";
 }
 
 export interface DetectedPython {
@@ -77,6 +108,8 @@ export interface DetectedPython {
   source: string;
   version: string | null;
   ready: boolean;
+  renderReady?: boolean;
+  missing?: string[];
 }
 
 /**

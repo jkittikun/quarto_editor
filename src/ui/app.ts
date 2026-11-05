@@ -3,7 +3,7 @@ import { EditorView } from "@codemirror/view";
 import { type Backend, type KernelMsg, type PythonEnv, joinPath, dirname, relativeTo } from "../backend/types";
 import { parseQuartoYml, bookOrder, insertChapter, removeChapter, isInBook, renameChapter, fileTree, isRevealDoc, type ProjectInfo, type TreeNode } from "../core/project";
 import { projectTemplate, newDocument, type TemplateKind } from "../core/templates";
-import { defaultPython } from "../core/python";
+import { defaultPython, canInstallInto, KERNEL_PACKAGES } from "../core/python";
 import { parseFreeze, freezePath, matchFrozen } from "../core/freeze";
 import { buildIndex, scanTargets, type XrefTarget, type HeadingNumber } from "../core/xref";
 import { parseBibtex } from "../core/bibtex";
@@ -18,7 +18,7 @@ import { md } from "../editor/widgets";
 import { QuickOpen } from "./quickOpen";
 import { ScmPanel } from "./scm";
 import { validVenvName } from "../core/git";
-import { formModal, confirmModal, pickModal, type PickItem } from "./modal";
+import { formModal, confirmModal, pickModal, choiceModal, type PickItem } from "./modal";
 import { $, h, debounce } from "./dom";
 
 const TEXT_EXT = /\.(qmd|md|markdown|Rmd|txt|yml|yaml|bib|py|R|css|scss|tex|json|lua)$/i;
@@ -608,8 +608,11 @@ export class App {
     if (!this.pythons) label.textContent = "Python …";
     else if (!env) label.textContent = "No Python found";
     else label.textContent = `Python ${env.version ?? ""}${env.source === "project" || env.source === "conda" || env.source === "pyenv" ? ` (${env.label})` : ""}`.replace("  ", " ");
-    $("#python-env").title = env ? `${env.path}${env.ready ? "" : "\n⚠ jupyter_client / ipykernel not installed"}\nClick to choose another interpreter` : "Choose a Python interpreter";
-    $("#python-env").classList.toggle("warn", !!env && !env.ready);
+    const missing = env?.missing ?? [];
+    $("#python-env").title = env
+      ? `${env.path}${missing.length ? `\n⚠ missing: ${missing.join(", ")}${env.ready ? " (needed by Quarto to render Python cells)" : ""}` : ""}\nClick to choose another interpreter`
+      : "Choose a Python interpreter";
+    $("#python-env").classList.toggle("warn", !!env && env.version !== null && env.renderReady === false);
   }
 
   async pickPython(): Promise<void> {
@@ -621,9 +624,13 @@ export class App {
       label: `Python ${p.version ?? "?"}  ${p.label}`,
       detail: p.path,
       group: groups[p.source],
-      badge: p.ready ? undefined : "needs ipykernel",
+      badge: p.missing?.length ? `missing: ${p.missing.join(", ")}` : undefined,
       selected: p.path === current,
     }));
+    const eff = this.effectivePython();
+    if (eff && eff.version && eff.renderReady === false && canInstallInto(eff.source)) {
+      items.unshift({ id: "__install", label: `＋ Install missing packages into ${eff.label}`, detail: eff.missing.join(", "), group: "This project" });
+    }
     if (!(this.pythons ?? []).some((p) => p.source === "project")) {
       items.unshift({ id: "__venv", label: "＋ Create virtual environment (.venv)", detail: "python -m venv in this project", group: "This project" });
     }
@@ -637,6 +644,10 @@ export class App {
       return this.pickPython();
     }
     if (choice === "__venv") return this.createVenv();
+    if (choice === "__install") {
+      await this.installPackages();
+      return;
+    }
     let path = choice;
     if (choice === "__path") {
       const res = await formModal("Python interpreter", [{ name: "path", label: "Path to python", placeholder: "/path/to/venv/bin/python" }], "Use");
@@ -651,6 +662,66 @@ export class App {
     else this.setSaveStatus(`Using ${env?.label} (${path})`);
   }
 
+  /** pip-install the packages Folio and Quarto need into the selected environment. */
+  async installPackages(): Promise<boolean> {
+    const env = this.effectivePython();
+    if (!env) return false;
+    if (!canInstallInto(env.source)) {
+      this.setSaveStatus(`Folio doesn't install into ${env.label} Python; create a project .venv instead`, true);
+      return false;
+    }
+    $("#log-panel").hidden = false;
+    $("#log-title").textContent = `Installing packages into ${env.label}…`;
+    const log = $("#log");
+    log.textContent = "";
+    const r = await this.backend.installPackages(this.root, env.path, (line) => {
+      log.textContent += line + "\n";
+      log.scrollTop = log.scrollHeight;
+    });
+    $("#log-title").textContent = r.ok ? `Installed packages into ${env.label}` : "Installing packages failed";
+    this.pythons = null;
+    await this.refreshPythons();
+    return r.ok;
+  }
+
+  /**
+   * Quarto runs Python cells with the selected interpreter, which then needs pyyaml, nbformat and
+   * nbclient. Offer to install them before a render that would fail. Returns false to cancel.
+   */
+  async ensureRenderPython(target: string | null): Promise<boolean> {
+    if (!this.pythons) await this.refreshPythons();
+    const env = this.effectivePython();
+    if (!env || !env.version || env.renderReady !== false) return true;
+    const texts = target ? [this.docsText.get(this.rel(target)) ?? this.view.state.doc.toString()] : [...this.docsText.values()];
+    if (!texts.some((t) => /^\s*(`{3,}|~{3,})\s*\{python/m.test(t))) return true;
+    const installable = canInstallInto(env.source);
+    const choice = await choiceModal(
+      "Python packages missing",
+      `Quarto needs ${env.missing.join(", ")} in ${env.label} (${env.path}) to render Python cells.`,
+      [
+        ...(installable ? [{ id: "install", label: "Install now", description: `pip install ${KERNEL_PACKAGES.join(" ")}` }] : []),
+        { id: "anyway", label: "Render anyway", description: installable ? "It will probably fail" : "Or pick a project .venv via the Python button in the bottom bar" },
+        { id: "cancel", label: "Cancel" },
+      ],
+    );
+    if (choice === "install") return this.installPackages();
+    return choice === "anyway";
+  }
+
+  /** After a failed render: point at missing Python modules and offer to install them. */
+  private renderFailureHint(logText: string) {
+    if (!/ModuleNotFoundError: No module named/.test(logText)) return;
+    const env = this.effectivePython();
+    const log = $("#log");
+    log.textContent += "\nHint: the selected Python is missing packages that Quarto needs.\n";
+    if (env && canInstallInto(env.source)) {
+      const btn = h("button", { class: "primary log-action" }, `Install missing packages into ${env.label}`);
+      btn.onclick = () => this.installPackages();
+      log.appendChild(btn);
+    } else log.textContent += "Choose or create a project .venv with the Python button in the bottom bar.\n";
+    log.scrollTop = log.scrollHeight;
+  }
+
   /** Create a project virtual environment and select it. */
   async createVenv() {
     const bases = (this.pythons ?? []).filter((p) => p.source !== "project" && p.version);
@@ -661,7 +732,7 @@ export class App {
       [
         { name: "name", label: "Folder name", value: ".venv" },
         { name: "base", label: "Base interpreter", type: "select", value: def, options: bases.map((p) => ({ value: p.path, label: `Python ${p.version} · ${p.label}` })) },
-        { name: "kernel", label: "Install jupyter_client and ipykernel (needed to run cells)", type: "checkbox", value: true },
+        { name: "kernel", label: `Install packages for running cells and Quarto rendering (${KERNEL_PACKAGES.join(", ")})`, type: "checkbox", value: true },
       ],
       "Create",
     );
@@ -946,6 +1017,7 @@ export class App {
     if (!this.current || $("#present-btn").hidden) return;
     const file = this.current.path;
     await this.flushSave(this.current);
+    if (!(await this.ensureRenderPython(file))) return;
     const log = $("#log");
     $("#log-panel").hidden = false;
     $("#log-title").textContent = `Preparing slides: ${this.rel(file)}…`;
@@ -956,6 +1028,7 @@ export class App {
     }, { to: "revealjs", python: this.effectivePython()?.path });
     if (!res.ok) {
       $("#log-title").textContent = "Couldn't render the slides";
+      this.renderFailureHint(log.textContent ?? "");
       return;
     }
     $("#log-title").textContent = "Slides ready";
@@ -992,6 +1065,7 @@ export class App {
   async render(whole: boolean, opts: { to?: string } = {}) {
     if (!this.root) return;
     if (this.current) await this.flushSave(this.current);
+    if (!(await this.ensureRenderPython(whole || !this.current ? null : this.current.path))) return;
     const log = $("#log");
     const panel = $("#log-panel");
     panel.hidden = false;
@@ -1009,6 +1083,7 @@ export class App {
       { to: opts.to, python: this.effectivePython()?.path },
     );
     const done = opts.to === "pdf" ? "PDF exported" : "Render complete";
+    if (!res.ok) this.renderFailureHint(log.textContent ?? "");
     $("#log-title").textContent = res.ok ? done : `${what} failed${res.code !== null ? ` (exit ${res.code})` : ""}`;
     if (!res.ok && opts.to === "pdf" && /tex|tlmgr|xelatex|pdflatex|lualatex/i.test(log.textContent ?? "")) {
       log.textContent += "\nHint: PDF export needs a LaTeX installation. Install one with:  quarto install tinytex\n";

@@ -73,8 +73,10 @@ describe("pythonCandidates", () => {
     ]);
   });
   it("parses probe output", () => {
-    expect(parseProbe("3.12.3 True\n")).toEqual({ version: "3.12.3", ready: true });
-    expect(parseProbe("3.9.1 False")).toEqual({ version: "3.9.1", ready: false });
+    expect(parseProbe("3.12.3 -\n")).toEqual({ version: "3.12.3", ready: true, renderReady: true, missing: [] });
+    // kernel works, but Quarto's renderer lacks pyyaml/nbclient (the user's .venv case)
+    expect(parseProbe("3.12.3 yaml,nbclient")).toEqual({ version: "3.12.3", ready: true, renderReady: false, missing: ["pyyaml", "nbclient"] });
+    expect(parseProbe("3.9.1 ipykernel")).toMatchObject({ ready: false, renderReady: false });
     expect(parseProbe("Traceback")).toBeNull();
   });
 });

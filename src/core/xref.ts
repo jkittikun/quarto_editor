@@ -136,6 +136,8 @@ export function scanTargets(
 
   let fence: { marker: string; cell: boolean; opts: Record<string, string>; start: number } | null = null;
   const divStack: boolean[] = [];
+  /** Figure/table divs we are inside, for subfigure numbering ("Figure 1.2(a)"). */
+  const parentStack: ({ target: XrefTarget; sub: number } | null)[] = [];
   for (let i = fmLines; i < lines.length; i++) {
     const line = lines[i];
     const f = FENCE.exec(line);
@@ -164,8 +166,11 @@ export function scanTargets(
     const divLine = /^\s*:{3,}\s*(.*?)\s*$/.exec(line);
     if (divLine) {
       const rest = divLine[1].replace(/:+$/, "").trim();
-      if (!rest) divStack.pop();
-      else {
+      if (!rest) {
+        divStack.pop();
+        parentStack.pop();
+      } else {
+        parentStack.push(null);
         const a = rest.startsWith("{") ? parseAttrs(rest) : { id: null, classes: [rest], kv: {} };
         const idType = a.id ? a.id.split("-")[0] : "";
         divStack.push(a.classes.some((c) => /^callout|^panel-tabset$/.test(c)) || (idType in XREF_TYPES && idType !== "sec"));
@@ -208,7 +213,21 @@ export function scanTargets(
     let m: RegExpExecArray | null;
     while ((m = imgRe.exec(line))) {
       const a = parseAttrs(m[2]);
-      if (a.id) add(a.id, i, m[1] || null);
+      if (!a.id) continue;
+      const parent = [...parentStack].reverse().find((p) => p && a.id!.startsWith(p.target.type + "-"));
+      if (parent) {
+        // subfigure inside a figure div: (a), (b), … — does not take its own figure number
+        const letter = String.fromCharCode(97 + parent.sub++);
+        out.push({
+          label: a.id,
+          type: parent.target.type,
+          number: `${parent.target.number}(${letter})`,
+          display: `${parent.target.display}(${letter})`,
+          caption: m[1] || null,
+          file,
+          line: i,
+        });
+      } else add(a.id, i, m[1] || null);
     }
     // Fenced divs: ::: {#fig-x} / {#thm-x}
     const div = /^\s*:{3,}\s*\{([^{}]*)\}/.exec(line);
@@ -220,7 +239,10 @@ export function scanTargets(
         const next = lines[i + 1] ?? "";
         const nh = /^#{2,6}\s+(.*)$/.exec(next);
         if (!cap && nh) cap = nh[1].trim();
+        // figure/table divs: the caption is the last paragraph inside the div
+        if (!cap && /^(fig|tbl)-/.test(a.id)) cap = lastParagraph(lines, i);
         add(a.id, i, cap);
+        if (/^(fig|tbl)-/.test(a.id) && parentStack.length) parentStack[parentStack.length - 1] = { target: out[out.length - 1], sub: 0 };
       }
     }
     // Display math label: $$ ... $$ {#eq-x}
@@ -237,6 +259,28 @@ export function scanTargets(
     }
   }
   return out;
+}
+
+/** Last plain paragraph inside the fenced div opening at line `open` (Quarto's figure caption). */
+function lastParagraph(lines: string[], open: number): string | null {
+  let depth = 0;
+  let close = lines.length;
+  for (let j = open + 1; j < lines.length; j++) {
+    const d = /^\s*:{3,}\s*(.*?)\s*$/.exec(lines[j]);
+    if (!d) continue;
+    if (d[1].replace(/:+$/, "").trim()) depth++;
+    else if (depth-- === 0) {
+      close = j;
+      break;
+    }
+  }
+  let end = close - 1;
+  while (end > open && !lines[end].trim()) end--;
+  let start = end;
+  while (start > open + 1 && lines[start - 1].trim()) start--;
+  const para = lines.slice(start, end + 1).join(" ").trim();
+  if (!para || /^!\[|^:{3,}|^```|^\|/.test(para) || start <= open) return null;
+  return para;
 }
 
 export interface XrefIndex {
